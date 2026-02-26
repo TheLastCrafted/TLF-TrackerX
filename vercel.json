@@ -7,6 +7,9 @@
     "api/http.js": {
       "maxDuration": 15
     },
+    "api/stooq.js": {
+      "maxDuration": 15
+    },
     "api/yfinance.py": {
       "maxDuration": 20
     }

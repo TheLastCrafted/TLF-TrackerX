@@ -138,6 +138,21 @@ type YfinanceQuoteRow = {
   exchange?: string;
 };
 
+type StooqQuoteRow = {
+  symbol?: string;
+  name?: string;
+  price?: number | string;
+  previousClose?: number | string;
+  changePct?: number | string;
+  marketCap?: number | string;
+  volume?: number | string;
+  averageVolume?: number | string;
+  high24h?: number | string;
+  low24h?: number | string;
+  currency?: string;
+  exchange?: string;
+};
+
 const topStocksCache = new Map<string, { expiresAt: number; rows: StockMarketRow[] }>();
 const topStocksInflight = new Map<string, Promise<StockMarketRow[]>>();
 const quoteCache = new Map<string, { expiresAt: number; rows: StockMarketRow[] }>();
@@ -508,6 +523,71 @@ async function fetchYfinanceQuoteBatch(symbols: string[]): Promise<StockMarketRo
   return [...bySymbol.values()];
 }
 
+async function fetchStooqQuoteBatch(symbols: string[]): Promise<StockMarketRow[]> {
+  const uniq = Array.from(new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean)));
+  if (!uniq.length) return [];
+  const chunkSize = 40;
+  const maxParallel = 2;
+  const chunks: string[][] = [];
+  for (let i = 0; i < uniq.length; i += chunkSize) chunks.push(uniq.slice(i, i + chunkSize));
+  const merged: StockMarketRow[] = [];
+
+  for (let i = 0; i < chunks.length; i += maxParallel) {
+    const wave = chunks.slice(i, i + maxParallel);
+    const settled = await Promise.allSettled(
+      wave.map(async (batch) => {
+        const url = `/api/stooq?symbols=${encodeURIComponent(batch.join(","))}`;
+        const res = await fetch(url, { headers: { Accept: "application/json" } });
+        if (!res.ok) return [] as StockMarketRow[];
+        const rows = (await res.json()) as StooqQuoteRow[];
+        if (!Array.isArray(rows)) return [] as StockMarketRow[];
+        const mapped: (StockMarketRow | null)[] = rows.map((row) => {
+          const symbol = String(row.symbol ?? "").trim().toUpperCase();
+          const price = asLooseNumber(row.price);
+          if (!symbol || !Number.isFinite(price)) return null;
+          const local = LOCAL_BY_SYMBOL.get(symbol);
+          const marketCap = asLooseNumber(row.marketCap);
+          const volume = asLooseNumber(row.volume);
+          const avgVolume = asLooseNumber(row.averageVolume);
+          const high24h = asLooseNumber(row.high24h);
+          const low24h = asLooseNumber(row.low24h);
+          const previousClose = asLooseNumber(row.previousClose);
+          const explicitChange = asLooseNumber(row.changePct);
+          const derivedChange =
+            Number.isFinite(previousClose) && previousClose > 0
+              ? ((price - previousClose) / previousClose) * 100
+              : NaN;
+          const quote: StockMarketRow = {
+            symbol,
+            name: String(row.name ?? local?.name ?? symbol).trim() || symbol,
+            kind: local?.kind === "etf" ? "etf" : "stock",
+            price,
+            changePct: Number.isFinite(explicitChange) ? explicitChange : Number.isFinite(derivedChange) ? derivedChange : 0,
+            marketCap: Number.isFinite(marketCap) ? marketCap : 0,
+            volume: Number.isFinite(volume) ? volume : 0,
+            averageVolume: Number.isFinite(avgVolume) ? avgVolume : undefined,
+            high24h: Number.isFinite(high24h) ? high24h : undefined,
+            low24h: Number.isFinite(low24h) ? low24h : undefined,
+            currency: row.currency || "USD",
+            exchange: row.exchange,
+            lastUpdatedAt: Date.now(),
+            logoUrl: stockLogoUrl(symbol),
+          };
+          return quote;
+        });
+        return mapped.filter((row): row is StockMarketRow => Boolean(row));
+      })
+    );
+    merged.push(...settled.flatMap((row) => (row.status === "fulfilled" ? row.value : [])));
+  }
+
+  const bySymbol = new Map<string, StockMarketRow>();
+  for (const row of merged) {
+    if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
+  }
+  return [...bySymbol.values()];
+}
+
 async function fetchYahooQuoteBatch(symbols: string[]): Promise<StockMarketRow[]> {
   if (!symbols.length) return [];
   const uniq = Array.from(new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean)));
@@ -534,10 +614,32 @@ async function fetchYahooQuoteBatch(symbols: string[]): Promise<StockMarketRow[]
 }
 
 async function fetchYahooThenYfinanceQuoteBatch(symbols: string[]): Promise<StockMarketRow[]> {
-  const yahoo = await fetchYahooQuoteBatch(symbols);
-  if (yahoo.length) return yahoo;
-  if (!runtimeIsWeb()) return yahoo;
-  return fetchYfinanceQuoteBatch(symbols);
+  const uniq = Array.from(new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean)));
+  if (!uniq.length) return [];
+
+  const bySymbol = new Map<string, StockMarketRow>();
+  const mergeRows = (rows: StockMarketRow[]) => {
+    for (const row of rows) {
+      if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
+    }
+  };
+
+  const web = runtimeIsWeb();
+  if (web) {
+    mergeRows(await fetchStooqQuoteBatch(uniq));
+    const missingAfterStooq = uniq.filter((symbol) => !bySymbol.has(symbol));
+    if (missingAfterStooq.length) {
+      mergeRows(await fetchYahooQuoteBatch(missingAfterStooq));
+    }
+    return uniq.map((symbol) => bySymbol.get(symbol)).filter((row): row is StockMarketRow => Boolean(row));
+  }
+
+  mergeRows(await fetchYahooQuoteBatch(uniq));
+  const missingAfterYahoo = uniq.filter((symbol) => !bySymbol.has(symbol));
+  if (missingAfterYahoo.length) {
+    mergeRows(await fetchYfinanceQuoteBatch(missingAfterYahoo));
+  }
+  return uniq.map((symbol) => bySymbol.get(symbol)).filter((row): row is StockMarketRow => Boolean(row));
 }
 
 async function fetchYahooTopUniverseFromSeed(count: number): Promise<StockMarketRow[]> {
@@ -704,7 +806,7 @@ export async function fetchStockQuoteSnapshot(
             ? await fetchYahooThenYfinanceQuoteBatch(secondaryTargets)
             : HAS_USABLE_FMP_KEY
               ? await fetchFmpQuoteBatch(secondaryTargets)
-              : await fetchYfinanceQuoteBatch(secondaryTargets)
+              : await fetchYahooThenYfinanceQuoteBatch(secondaryTargets)
           : await fetchFmpQuoteBatch(secondaryTargets);
         for (const row of secondaryRows) {
           const prev = bySymbol.get(row.symbol);
