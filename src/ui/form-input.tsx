@@ -28,14 +28,15 @@ export function FormInput(props: FormInputProps) {
         placeholderTextColor={inputProps.placeholderTextColor ?? (colors.dark ? "#6B6B7A" : "#8A97B2")}
         style={[
           {
-            borderRadius: 12,
+            borderRadius: 13,
             borderWidth: 1,
-            borderColor: colors.dark ? "#22304A" : "#C8D6EE",
-            backgroundColor: colors.dark ? "#0D1422" : "#F6FAFF",
+            borderColor: colors.dark ? "#2A3B5E" : "#C8D6EE",
+            backgroundColor: colors.dark ? colors.surfaceAlt : "#F7FAFF",
             color: colors.text,
             paddingHorizontal: 12,
-            paddingVertical: 10,
+            paddingVertical: 11,
             fontWeight: "600",
+            fontSize: 14,
           },
           style,
         ]}

@@ -1,18 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import Svg, { Circle, G } from "react-native-svg";
 
 import { FINANCIAL_ASSETS, FINANCIAL_ASSETS_BY_ID, FinancialAssetKind } from "../../src/catalog/financial-assets";
 import { searchUniversalAssets, UniversalAsset } from "../../src/data/asset-search";
-import { fetchCoinGeckoMarkets } from "../../src/data/coingecko";
+import { fetchCoinGeckoMarkets, resolveCoinGeckoIdBySymbol } from "../../src/data/coingecko";
 import { fetchYahooQuotes } from "../../src/data/quotes";
+import { useI18n } from "../../src/i18n/use-i18n";
+import { mapRowsToPortfolioTransactions, pickLocalImportFile, readImportRowsFromAsset } from "../../src/lib/file-import";
 import { usePriceAlerts } from "../../src/state/price-alerts";
 import { useFinanceTools } from "../../src/state/finance-tools";
 import { useSettings } from "../../src/state/settings";
 import { FormInput } from "../../src/ui/form-input";
 import { ActionButton } from "../../src/ui/action-button";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
+import { RefreshFeedback, refreshControlProps } from "../../src/ui/refresh-feedback";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -36,7 +40,38 @@ function parseLocaleNumber(input: string): number {
   return Number.isFinite(value) ? value : NaN;
 }
 
+function normalizeCurrency(input?: string | null): "USD" | "EUR" | null {
+  const up = String(input ?? "").trim().toUpperCase();
+  if (up === "USD" || up === "EUR") return up;
+  return null;
+}
+
+function convertCurrencyAmount(value: number, from: "USD" | "EUR", to: "USD" | "EUR", usdPerEur: number): number {
+  if (!Number.isFinite(value)) return NaN;
+  if (from === to) return value;
+  if (!Number.isFinite(usdPerEur) || usdPerEur <= 0) return value;
+  return from === "EUR" ? value * usdPerEur : value / usdPerEur;
+}
+
 type AssetFilter = "All" | FinancialAssetKind;
+const COMMON_COINGECKO_BY_SYMBOL: Record<string, string> = {
+  BTC: "bitcoin",
+  ETH: "ethereum",
+  SOL: "solana",
+  XRP: "ripple",
+  ADA: "cardano",
+  DOGE: "dogecoin",
+  DOT: "polkadot",
+  AVAX: "avalanche-2",
+  LINK: "chainlink",
+  BNB: "binancecoin",
+  MATIC: "matic-network",
+  LTC: "litecoin",
+  BCH: "bitcoin-cash",
+  XLM: "stellar",
+  ATOM: "cosmos",
+  UNI: "uniswap",
+};
 
 export default function PortfolioScreen() {
   const insets = useSafeAreaInsets();
@@ -44,6 +79,7 @@ export default function PortfolioScreen() {
   const { settings } = useSettings();
   const colors = useAppColors();
   const { addAlert } = usePriceAlerts();
+  const { t, tx } = useI18n();
 
   const [compactHeader, setCompactHeader] = useState(false);
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("All");
@@ -54,14 +90,28 @@ export default function PortfolioScreen() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [showHoldingForm, setShowHoldingForm] = useState(false);
   const [showTxForm, setShowTxForm] = useState(false);
-  const [showTransactionsPanel, setShowTransactionsPanel] = useState(true);
+  const [showTransactionsPanel, setShowTransactionsPanel] = useState(false);
   const [showAllTransactions, setShowAllTransactions] = useState(false);
   const [showAllocationPie, setShowAllocationPie] = useState(true);
+  const [showExpandedView, setShowExpandedView] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importStatus, setImportStatus] = useState<string | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  useLogoScrollToTop(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  });
   const [quantity, setQuantity] = useState("1");
   const [avgCost, setAvgCost] = useState("0");
+  const [purchaseCurrency, setPurchaseCurrency] = useState<"USD" | "EUR">(settings.currency);
 
   const [cryptoPrices, setCryptoPrices] = useState<Record<string, number>>({});
   const [equityPrices, setEquityPrices] = useState<Record<string, number>>({});
+  const [equityPriceCurrency, setEquityPriceCurrency] = useState<Record<string, "USD" | "EUR">>({});
+  const [usdPerEur, setUsdPerEur] = useState(1.08);
+  const resolvedLiveRef = useRef<Set<string>>(new Set());
+  const resolvingLiveRef = useRef<Set<string>>(new Set());
+  const retryAfterRef = useRef<Map<string, number>>(new Map());
   const [txSymbol, setTxSymbol] = useState("");
   const [txSide, setTxSide] = useState<"buy" | "sell">("buy");
   const [txQty, setTxQty] = useState("1");
@@ -70,60 +120,206 @@ export default function PortfolioScreen() {
   const [addStatus, setAddStatus] = useState<string | null>(null);
 
   useEffect(() => {
-    let alive = true;
-    const ids = Array.from(
-      new Set(
-        holdings
-          .map((h) => h.coinGeckoId || FINANCIAL_ASSETS_BY_ID[h.assetId ?? ""]?.coinGeckoId)
-          .filter((id): id is string => Boolean(id))
-      )
-    );
+    setPurchaseCurrency(settings.currency);
+  }, [settings.currency]);
 
-    if (!ids.length) {
-      setCryptoPrices({});
-      return;
-    }
-    const poll = async () => {
-      try {
-        const rows = await fetchCoinGeckoMarkets({ ids, vsCurrency: settings.currency.toLowerCase() as "usd" | "eur", useCache: true, cacheTtlMs: 10000 });
-        if (alive) setCryptoPrices(Object.fromEntries(rows.map((r) => [r.id, r.current_price])));
-      } catch {
-        if (alive) setCryptoPrices({});
+  const pollCryptoPrices = useMemo(() => {
+    return async (aliveCheck?: () => boolean) => {
+      const isAlive = () => (aliveCheck ? aliveCheck() : true);
+      const mappedIds = holdings
+        .filter((h) => h.kind === "crypto")
+        .map((h) => h.coinGeckoId || FINANCIAL_ASSETS_BY_ID[h.assetId ?? ""]?.coinGeckoId)
+        .filter((id): id is string => Boolean(id));
+      const unresolved = holdings.filter((h) => h.kind === "crypto" && !(h.coinGeckoId || FINANCIAL_ASSETS_BY_ID[h.assetId ?? ""]?.coinGeckoId));
+      const ids = Array.from(new Set(mappedIds));
+      if (!ids.length) {
+        if (isAlive()) setCryptoPrices({});
+      } else {
+        try {
+          const rows = await fetchCoinGeckoMarkets({ ids, vsCurrency: settings.currency.toLowerCase() as "usd" | "eur", useCache: true, cacheTtlMs: 10000 });
+          if (!isAlive()) return;
+          const fresh = Object.fromEntries(rows.map((r) => [r.id, r.current_price]));
+          setCryptoPrices((prev) => {
+            const next: Record<string, number> = {};
+            for (const id of ids) {
+              const value = fresh[id];
+              if (Number.isFinite(value)) next[id] = value;
+              else if (Number.isFinite(prev[id])) next[id] = prev[id];
+            }
+            return next;
+          });
+        } catch {
+          // Keep last known values on transient failures/rate limits.
+        }
+      }
+
+      // Resolve missing CoinGecko IDs in background; do not block live price fetch.
+      for (const h of unresolved) {
+        const key = `cg:${h.id}`;
+        if (resolvedLiveRef.current.has(key) || resolvingLiveRef.current.has(key)) continue;
+        const retryAt = retryAfterRef.current.get(key) ?? 0;
+        if (Date.now() < retryAt) continue;
+        resolvingLiveRef.current.add(key);
+        void (async () => {
+          try {
+            const directId = COMMON_COINGECKO_BY_SYMBOL[h.symbol.trim().toUpperCase()];
+            if (directId) {
+              updateHolding(h.id, { coinGeckoId: directId });
+              resolvedLiveRef.current.add(key);
+              retryAfterRef.current.delete(key);
+              return;
+            }
+            const resolved = await resolveCoinGeckoIdBySymbol(h.symbol, h.name);
+            if (resolved) {
+              updateHolding(h.id, { coinGeckoId: resolved });
+              resolvedLiveRef.current.add(key);
+              retryAfterRef.current.delete(key);
+              return;
+            }
+            const query = `${h.symbol} ${h.name}`.trim();
+            const rows = await searchUniversalAssets(query, 8);
+            const hit = rows.find((r) => r.kind === "crypto" && r.coinGeckoId);
+            if (hit?.coinGeckoId) {
+              updateHolding(h.id, { coinGeckoId: hit.coinGeckoId });
+              resolvedLiveRef.current.add(key);
+              retryAfterRef.current.delete(key);
+              return;
+            }
+            retryAfterRef.current.set(key, Date.now() + 120_000);
+          } catch {
+            retryAfterRef.current.set(key, Date.now() + 120_000);
+          } finally {
+            resolvingLiveRef.current.delete(key);
+          }
+        })();
       }
     };
-    void poll();
-    const everyMs = 30_000;
-    const timer = setInterval(() => void poll(), everyMs);
+  }, [holdings, settings.currency, updateHolding]);
 
-    return () => {
-      alive = false;
-      clearInterval(timer);
+  const pollEquityPrices = useMemo(() => {
+    return async (aliveCheck?: () => boolean) => {
+      const isAlive = () => (aliveCheck ? aliveCheck() : true);
+      const rowsNoCrypto = holdings.filter((h) => h.kind !== "crypto");
+      let symbols = Array.from(new Set(rowsNoCrypto.map((h) => (h.quoteSymbol || h.symbol).toUpperCase()).filter(Boolean)));
+      if (!symbols.length) {
+        if (isAlive()) setEquityPrices({});
+        if (isAlive()) setEquityPriceCurrency({});
+        return;
+      }
+      try {
+        let rows = await fetchYahooQuotes(symbols);
+        const found = new Set(rows.map((row) => row.symbol.toUpperCase()));
+        const missing = rowsNoCrypto.filter((h) => !found.has((h.quoteSymbol || h.symbol).toUpperCase()));
+
+        for (const h of missing) {
+          const key = `yf:${h.id}`;
+          if (resolvedLiveRef.current.has(key)) continue;
+          const retryAt = retryAfterRef.current.get(key) ?? 0;
+          if (Date.now() < retryAt) continue;
+          try {
+            const query = `${h.symbol} ${h.name}`.trim();
+            const searchRows = await searchUniversalAssets(query, 10);
+            const hit = searchRows.find((r) => r.kind !== "crypto" && r.symbol);
+            if (hit?.symbol) {
+              updateHolding(h.id, { quoteSymbol: hit.symbol.toUpperCase() });
+              symbols.push(hit.symbol.toUpperCase());
+              resolvedLiveRef.current.add(key);
+              retryAfterRef.current.delete(key);
+            }
+          } catch {
+            retryAfterRef.current.set(key, Date.now() + 120_000);
+          }
+        }
+        symbols = Array.from(new Set(symbols));
+        if (symbols.length !== found.size) {
+          rows = await fetchYahooQuotes(symbols);
+        }
+        if (!isAlive()) return;
+        const fresh = Object.fromEntries(rows.map((row) => [row.symbol.toUpperCase(), row.price]));
+        const freshCurrency = Object.fromEntries(
+          rows.map((row) => [row.symbol.toUpperCase(), normalizeCurrency(row.currency)])
+        ) as Record<string, "USD" | "EUR" | null>;
+        setEquityPrices((prev) => {
+          const next: Record<string, number> = {};
+          for (const symbol of symbols) {
+            const value = fresh[symbol];
+            if (Number.isFinite(value)) next[symbol] = value;
+            else if (Number.isFinite(prev[symbol])) next[symbol] = prev[symbol];
+          }
+          return next;
+        });
+        setEquityPriceCurrency((prev) => {
+          const next: Record<string, "USD" | "EUR"> = {};
+          for (const symbol of symbols) {
+            const fromLive = freshCurrency[symbol];
+            if (fromLive === "USD" || fromLive === "EUR") {
+              next[symbol] = fromLive;
+            } else if (prev[symbol]) {
+              next[symbol] = prev[symbol];
+            }
+          }
+          return next;
+        });
+      } catch {
+        // Keep last known values on transient failures.
+      }
     };
-  }, [holdings, settings.currency]);
+  }, [holdings, updateHolding]);
 
   useEffect(() => {
     let alive = true;
-    const symbols = Array.from(new Set(holdings.filter((h) => h.kind !== "crypto").map((h) => h.symbol)));
-    if (!symbols.length) {
-      setEquityPrices({});
-      return;
-    }
-    const poll = async () => {
-      try {
-        const rows = await fetchYahooQuotes(symbols);
-        if (alive) setEquityPrices(Object.fromEntries(rows.map((row) => [row.symbol.toUpperCase(), row.price])));
-      } catch {
-        if (alive) setEquityPrices({});
-      }
-    };
-    void poll();
+    const isAlive = () => alive;
+    void pollCryptoPrices(isAlive);
     const everyMs = 30_000;
-    const timer = setInterval(() => void poll(), everyMs);
+    const timer = setInterval(() => void pollCryptoPrices(isAlive), everyMs);
+
     return () => {
       alive = false;
       clearInterval(timer);
     };
-  }, [holdings]);
+  }, [pollCryptoPrices]);
+
+  useEffect(() => {
+    let alive = true;
+    const isAlive = () => alive;
+    void pollEquityPrices(isAlive);
+    const everyMs = 30_000;
+    const timer = setInterval(() => void pollEquityPrices(isAlive), everyMs);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [pollEquityPrices]);
+
+  useEffect(() => {
+    let alive = true;
+    const pollFx = async () => {
+      try {
+        const rows = await fetchYahooQuotes(["EURUSD=X"]);
+        if (!alive) return;
+        const rate = rows.find((r) => r.symbol.toUpperCase() === "EURUSD=X")?.price ?? rows[0]?.price;
+        if (Number.isFinite(rate) && rate > 0) setUsdPerEur(rate);
+      } catch {
+        // Keep last known FX rate.
+      }
+    };
+    void pollFx();
+    const timer = setInterval(() => void pollFx(), 60_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const onManualRefresh = async () => {
+    if (manualRefreshing) return;
+    setManualRefreshing(true);
+    try {
+      await Promise.all([pollCryptoPrices(), pollEquityPrices()]);
+    } finally {
+      setManualRefreshing(false);
+    }
+  };
 
   const matchedAssets = useMemo(() => {
     const scoped = FINANCIAL_ASSETS.filter((asset) => (assetFilter === "All" ? true : asset.kind === assetFilter));
@@ -173,19 +369,26 @@ export default function PortfolioScreen() {
         coinGeckoId: holding.coinGeckoId || catalogAsset?.coinGeckoId,
         defaultPrice: catalogAsset?.defaultPrice,
       };
+      const holdingCostCurrency = normalizeCurrency(holding.costCurrency) ?? settings.currency;
       const isLivePrice = asset.kind === "crypto"
         ? Boolean(asset.coinGeckoId && Number.isFinite(cryptoPrices[asset.coinGeckoId]))
-        : Number.isFinite(equityPrices[asset.symbol.toUpperCase()]);
-      const marketPrice = asset.kind === "crypto"
+        : Number.isFinite(equityPrices[(holding.quoteSymbol || asset.symbol).toUpperCase()]);
+      const quoteSymbol = (holding.quoteSymbol || asset.symbol).toUpperCase();
+      const marketPriceRaw = asset.kind === "crypto"
         ? (asset.coinGeckoId ? cryptoPrices[asset.coinGeckoId] : undefined)
-        : equityPrices[asset.symbol.toUpperCase()] ?? holding.manualPrice ?? asset.defaultPrice;
-      const cost = holding.quantity * holding.avgCost;
-      const value = holding.quantity * (marketPrice ?? holding.avgCost);
+        : equityPrices[quoteSymbol] ?? holding.manualPrice ?? asset.defaultPrice;
+      const marketCurrency = asset.kind === "crypto" ? settings.currency : (equityPriceCurrency[quoteSymbol] ?? settings.currency);
+      const avgCostDisplay = convertCurrencyAmount(holding.avgCost, holdingCostCurrency, settings.currency, usdPerEur);
+      const marketPrice = Number.isFinite(marketPriceRaw ?? NaN)
+        ? convertCurrencyAmount(Number(marketPriceRaw), marketCurrency, settings.currency, usdPerEur)
+        : undefined;
+      const cost = holding.quantity * avgCostDisplay;
+      const value = holding.quantity * (marketPrice ?? avgCostDisplay);
       const pnl = value - cost;
       const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
-      return { holding, asset, marketPrice, cost, value, pnl, pnlPct, isLivePrice };
+      return { holding, asset, marketPrice, avgCostDisplay, cost, value, pnl, pnlPct, isLivePrice };
     });
-  }, [holdings, cryptoPrices, equityPrices]);
+  }, [holdings, cryptoPrices, equityPrices, equityPriceCurrency, settings.currency, usdPerEur]);
 
   const totalCost = rows.reduce((sum, row) => sum + row.cost, 0);
   const totalValue = rows.reduce((sum, row) => sum + row.value, 0);
@@ -202,8 +405,11 @@ export default function PortfolioScreen() {
       if (tx.side !== "buy" && tx.side !== "sell") continue;
       const key = tx.symbol.toUpperCase();
       const lots = bySymbol.get(key) ?? [];
+      const txCurrency = normalizeCurrency(tx.currency) ?? settings.currency;
+      const txPriceDisplay = convertCurrencyAmount(tx.price, txCurrency, settings.currency, usdPerEur);
+      const txFeeDisplay = convertCurrencyAmount(tx.fee, txCurrency, settings.currency, usdPerEur);
       if (tx.side === "buy") {
-        lots.push({ qty: tx.quantity, price: tx.price });
+        lots.push({ qty: tx.quantity, price: txPriceDisplay });
         bySymbol.set(key, lots);
         continue;
       }
@@ -220,12 +426,12 @@ export default function PortfolioScreen() {
       }
       const matchedQty = tx.quantity - sellQty;
       if (matchedQty <= 0) continue;
-      const proceeds = matchedQty * tx.price;
-      realized += proceeds - costBasis - tx.fee;
+      const proceeds = matchedQty * txPriceDisplay;
+      realized += proceeds - costBasis - txFeeDisplay;
       bySymbol.set(key, lots);
     }
     return Number.isFinite(realized) ? realized : 0;
-  }, [transactions]);
+  }, [transactions, settings.currency, usdPerEur]);
 
   const allocation = useMemo(() => {
     if (totalValue <= 0) return [];
@@ -243,7 +449,6 @@ export default function PortfolioScreen() {
       })
       .sort((a, b) => b.actual - a.actual);
   }, [rows, totalValue]);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const allocationByKind = useMemo(() => {
     if (totalValue <= 0) return [] as { kind: FinancialAssetKind; pct: number; value: number }[];
     const bucket: Record<FinancialAssetKind, number> = { stock: 0, etf: 0, crypto: 0 };
@@ -257,6 +462,7 @@ export default function PortfolioScreen() {
       .sort((a, b) => b.value - a.value);
   }, [rows, totalValue]);
   const largest = allocation[0];
+  const smallest = allocation[allocation.length - 1];
   const effectivePositions = useMemo(() => {
     if (totalValue <= 0) return 0;
     const hhi = rows.reduce((sum, row) => {
@@ -275,19 +481,59 @@ export default function PortfolioScreen() {
   const pieRadius = 44;
   const pieStroke = 12;
   const pieCircumference = 2 * Math.PI * pieRadius;
+  const largestAllocationPct = largest?.actual ?? 0;
+  const avgPositionValue = rows.length ? totalValue / rows.length : 0;
+  const missingLiveQuotes = Math.max(rows.length - livePriceCount, 0);
+  const bestHoldings = useMemo(() => [...rows].sort((a, b) => b.pnlPct - a.pnlPct).slice(0, 3), [rows]);
+  const weakestHoldings = useMemo(() => [...rows].sort((a, b) => a.pnlPct - b.pnlPct).slice(0, 3), [rows]);
   const kindIcon = (kind: FinancialAssetKind): keyof typeof MaterialIcons.glyphMap => {
     if (kind === "crypto") return "currency-bitcoin";
     if (kind === "etf") return "pie-chart";
     return "show-chart";
   };
 
+  const importTransactions = async () => {
+    setImportStatus(null);
+    setImportBusy(true);
+    try {
+      const picked = await pickLocalImportFile();
+      if (!picked.ok) {
+        setImportStatus(picked.message);
+        return;
+      }
+      const loaded = await readImportRowsFromAsset(picked.asset);
+      if (!loaded.ok) {
+        setImportStatus(loaded.message);
+        return;
+      }
+      const mapped = mapRowsToPortfolioTransactions(loaded.rows);
+      mapped.transactions.forEach((tx) => addTransaction({ ...tx, currency: settings.currency }));
+      setImportStatus(`${t("Imported", "Importiert")} ${mapped.transactions.length} ${t("transactions", "Transaktionen")}. ${t("Skipped", "Uebersprungen")}: ${mapped.skipped}.`);
+    } catch {
+      setImportStatus(t("Import failed. Try a broker CSV/XLSX export.", "Import fehlgeschlagen. Bitte Broker-CSV/XLSX verwenden."));
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
   return (
     <ScrollView
+      ref={scrollRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={{ paddingBottom: 118 }}
+      refreshControl={
+        <RefreshControl
+          refreshing={manualRefreshing}
+          onRefresh={() => {
+            void onManualRefresh();
+          }}
+          {...refreshControlProps(colors, t("Refreshing portfolio...", "Portfolio wird aktualisiert..."))}
+        />
+      }
       onScroll={(e) => setCompactHeader(e.nativeEvent.contentOffset.y > 120)}
       scrollEventThrottle={16}
     >
+      <RefreshFeedback refreshing={manualRefreshing} colors={colors} label={t("Refreshing portfolio data...", "Portfolio-Daten werden aktualisiert...")} />
       {compactHeader && (
         <View
           style={{
@@ -307,33 +553,39 @@ export default function PortfolioScreen() {
             alignItems: "center",
           }}
         >
-          <Text style={{ color: colors.text, fontWeight: "800" }}>Portfolio</Text>
-          <Text style={{ color: colors.subtext, fontSize: 12 }}>{rows.length} holdings</Text>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{tx("Portfolio")}</Text>
+          <Text style={{ color: colors.subtext, fontSize: 12 }}>{rows.length} {t("holdings", "Positionen")}</Text>
         </View>
       )}
 
-      <TabHeader title="Portfolio" subtitle="Track holdings, live value, P&L, and allocation across stocks, ETFs, and crypto." />
+      <TabHeader
+        title={tx("Portfolio")}
+        subtitle={t(
+          "Track holdings, live value, P&L, and allocation across stocks, ETFs, and crypto.",
+          "Verfolge Positionen, Live-Wert, P&L und Allokation ueber Aktien, ETFs und Krypto."
+        )}
+      />
 
       <View style={{ paddingHorizontal: SCREEN_HORIZONTAL_PADDING }}>
         <View style={{ marginBottom: 10, flexDirection: "row", gap: 10 }}>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Portfolio Value</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Portfolio Value", "Portfolio-Wert")}</Text>
             <Text style={{ color: colors.text, marginTop: 4, fontWeight: "900" }}>{toMoney(totalValue, settings.currency, settings.language)}</Text>
           </View>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Live Coverage</Text>
-            <Text style={{ color: colors.text, marginTop: 4, fontWeight: "900" }}>{livePriceCount}/{rows.length || 0} holdings</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Live Coverage", "Live-Abdeckung")}</Text>
+            <Text style={{ color: colors.text, marginTop: 4, fontWeight: "900" }}>{livePriceCount}/{rows.length || 0} {t("holdings", "Positionen")}</Text>
           </View>
         </View>
         <View style={{ marginBottom: 10, flexDirection: "row", gap: 10 }}>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Unrealized P&L</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Unrealized P&L", "Unrealisierte P&L")}</Text>
             <Text style={{ color: totalPnl >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "900" }}>
               {toMoney(totalPnl, settings.currency, settings.language)} ({pct(totalPnlPct)})
             </Text>
           </View>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Realized P&L</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Realized P&L", "Realisierte P&L")}</Text>
             <Text style={{ color: realizedPnl >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "900" }}>
               {toMoney(realizedPnl, settings.currency, settings.language)}
             </Text>
@@ -341,41 +593,57 @@ export default function PortfolioScreen() {
         </View>
         <View style={{ marginBottom: 10, flexDirection: "row", gap: 10 }}>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Win Rate</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Win Rate", "Trefferquote")}</Text>
             <Text style={{ color: colors.text, marginTop: 4, fontWeight: "900" }}>
               {rows.length ? `${winRate.toFixed(1)}%` : "-"}
             </Text>
           </View>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Diversification</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Diversification", "Diversifikation")}</Text>
             <Text style={{ color: colors.text, marginTop: 4, fontWeight: "900" }}>
-              {rows.length ? `${effectivePositions.toFixed(1)} effective positions` : "-"}
+              {rows.length ? `${effectivePositions.toFixed(1)} ${t("effective positions", "effektive Positionen")}` : "-"}
             </Text>
           </View>
         </View>
-
         {!!allocation.length && (
           <View style={{ marginBottom: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-              <Text style={{ color: colors.text, fontWeight: "800" }}>Allocation Breakdown</Text>
-              <Pressable
-                onPress={() => setShowAllocationPie((v) => !v)}
-                style={({ pressed }) => ({
-                  borderRadius: 999,
-                  borderWidth: 1,
-                  borderColor: "#8E63F0",
-                  backgroundColor: pressed ? (colors.dark ? "#221A3E" : "#F0E9FF") : (colors.dark ? "#1A1630" : "#F5F0FF"),
-                  paddingHorizontal: 10,
-                  paddingVertical: 6,
-                })}
-              >
-                <Text style={{ color: "#8E63F0", fontSize: 12, fontWeight: "700" }}>
-                  {showAllocationPie ? "Hide chart" : "Show chart"}
-                </Text>
-              </Pressable>
+              <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Allocation Breakdown", "Allokations-Aufschluesselung")}</Text>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <Pressable
+                  onPress={() => setShowExpandedView((v) => !v)}
+                  style={({ pressed }) => ({
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: "#8E63F0",
+                    backgroundColor: pressed ? (colors.dark ? "#221A3E" : "#F0E9FF") : (colors.dark ? "#1A1630" : "#F5F0FF"),
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                  })}
+                >
+                  <Text style={{ color: "#8E63F0", fontSize: 12, fontWeight: "700" }}>
+                    {showExpandedView ? t("Hide expanded", "Erweitert ausblenden") : t("Expand view", "Ansicht erweitern")}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setShowAllocationPie((v) => !v)}
+                  style={({ pressed }) => ({
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: "#8E63F0",
+                    backgroundColor: pressed ? (colors.dark ? "#221A3E" : "#F0E9FF") : (colors.dark ? "#1A1630" : "#F5F0FF"),
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                  })}
+                >
+                  <Text style={{ color: "#8E63F0", fontSize: 12, fontWeight: "700" }}>
+                    {showAllocationPie ? t("Hide chart", "Chart ausblenden") : t("Show chart", "Chart anzeigen")}
+                  </Text>
+                </Pressable>
+              </View>
             </View>
             <Text style={{ color: colors.subtext, marginTop: 3, fontSize: 12 }}>
-              Largest position: {largest?.symbol ?? "-"} ({largest ? `${largest.actual.toFixed(2)}%` : "-"})
+              {t("Largest position", "Groesste Position")}: {largest?.symbol ?? "-"} ({largest ? `${largest.actual.toFixed(2)}%` : "-"})
             </Text>
             {showAllocationPie && (
               <View
@@ -419,7 +687,7 @@ export default function PortfolioScreen() {
                     </Svg>
                     <View style={{ position: "absolute", alignItems: "center" }}>
                       <Text style={{ color: colors.text, fontWeight: "900", fontSize: 15 }}>{allocation.length}</Text>
-                      <Text style={{ color: colors.subtext, fontSize: 10 }}>assets</Text>
+                      <Text style={{ color: colors.subtext, fontSize: 10 }}>{t("assets", "Assets")}</Text>
                     </View>
                   </View>
                   <View style={{ flex: 1, gap: 6 }}>
@@ -442,7 +710,115 @@ export default function PortfolioScreen() {
           </View>
         )}
 
-        <ActionButton label={showHoldingForm ? "Close Add Position" : "Add Position"} onPress={() => setShowHoldingForm((v) => !v)} style={{ marginBottom: 10 }} />
+        {showExpandedView && (
+          <View style={{ marginBottom: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Holdings Deep View", "Positionen-Detailansicht")}</Text>
+            <Text style={{ color: colors.subtext, marginTop: 3, fontSize: 12 }}>
+              {t(
+                "Additional allocation, concentration, and per-holding health details.",
+                "Zusaetzliche Allokations-, Konzentrations- und Positionsqualitaets-Details."
+              )}
+            </Text>
+
+            <View style={{ marginTop: 10, flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+              <View style={{ flexBasis: "48%", flexGrow: 1, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.dark ? "#121A2C" : "#F6F9FF", padding: 9 }}>
+                <Text style={{ color: colors.subtext, fontSize: 11 }}>{t("Cost Basis", "Einstandswert")}</Text>
+                <Text style={{ color: colors.text, marginTop: 3, fontWeight: "800" }}>{toMoney(totalCost, settings.currency, settings.language)}</Text>
+              </View>
+              <View style={{ flexBasis: "48%", flexGrow: 1, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.dark ? "#121A2C" : "#F6F9FF", padding: 9 }}>
+                <Text style={{ color: colors.subtext, fontSize: 11 }}>{t("Largest Position", "Groesste Position")}</Text>
+                <Text style={{ color: colors.text, marginTop: 3, fontWeight: "800" }}>{largest ? `${largest.symbol} ${largestAllocationPct.toFixed(1)}%` : "-"}</Text>
+              </View>
+              <View style={{ flexBasis: "48%", flexGrow: 1, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.dark ? "#121A2C" : "#F6F9FF", padding: 9 }}>
+                <Text style={{ color: colors.subtext, fontSize: 11 }}>{t("Avg Position Size", "Durchschn. Positionsgroesse")}</Text>
+                <Text style={{ color: colors.text, marginTop: 3, fontWeight: "800" }}>{toMoney(avgPositionValue, settings.currency, settings.language)}</Text>
+              </View>
+              <View style={{ flexBasis: "48%", flexGrow: 1, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.dark ? "#121A2C" : "#F6F9FF", padding: 9 }}>
+                <Text style={{ color: colors.subtext, fontSize: 11 }}>{t("Missing Live Quotes", "Fehlende Live-Kurse")}</Text>
+                <Text style={{ color: missingLiveQuotes > 0 ? "#F4A261" : "#5CE0AB", marginTop: 3, fontWeight: "800" }}>
+                  {missingLiveQuotes}/{rows.length || 0}
+                </Text>
+              </View>
+            </View>
+
+            {!!allocationByKind.length && (
+              <View style={{ marginTop: 10, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.dark ? "#111728" : "#F8FAFF", padding: 9 }}>
+                <Text style={{ color: colors.text, fontWeight: "700", fontSize: 12 }}>{t("Allocation By Asset Class", "Allokation nach Asset-Klasse")}</Text>
+                <View style={{ marginTop: 6, gap: 6 }}>
+                  {allocationByKind.map((row) => (
+                    <View key={`by_kind_${row.kind}`} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
+                        <MaterialIcons name={kindIcon(row.kind)} size={13} color={colors.subtext} />
+                        <Text style={{ color: colors.text, fontSize: 12, fontWeight: "700" }}>{row.kind.toUpperCase()}</Text>
+                      </View>
+                      <Text style={{ color: colors.subtext, fontSize: 12, fontWeight: "700" }}>
+                        {toMoney(row.value, settings.currency, settings.language)} • {row.pct.toFixed(1)}%
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            {!!rows.length && (
+              <View style={{ marginTop: 10, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.dark ? "#111728" : "#F8FAFF", padding: 9 }}>
+                <Text style={{ color: colors.text, fontWeight: "700", fontSize: 12 }}>{t("Top / Bottom Holdings", "Beste / Schwaechste Positionen")}</Text>
+                <View style={{ marginTop: 7, gap: 7 }}>
+                  {bestHoldings.map((row) => (
+                    <View key={`best_${row.holding.id}`} style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <Text numberOfLines={1} style={{ color: colors.text, flex: 1, fontSize: 12, fontWeight: "700" }}>{row.asset.symbol} • {row.asset.name}</Text>
+                      <Text style={{ color: "#5CE0AB", fontSize: 12, fontWeight: "800" }}>{pct(row.pnlPct)}</Text>
+                    </View>
+                  ))}
+                  {weakestHoldings.map((row) => (
+                    <View key={`weak_${row.holding.id}`} style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <Text numberOfLines={1} style={{ color: colors.text, flex: 1, fontSize: 12, fontWeight: "700" }}>{row.asset.symbol} • {row.asset.name}</Text>
+                      <Text style={{ color: "#FF8497", fontSize: 12, fontWeight: "800" }}>{pct(row.pnlPct)}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            {!!rows.length && (
+              <View style={{ marginTop: 10, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.dark ? "#111728" : "#F8FAFF", padding: 9 }}>
+                <Text style={{ color: colors.text, fontWeight: "700", fontSize: 12 }}>{t("Holdings Detail", "Positionsdetails")}</Text>
+                <Text style={{ color: colors.subtext, marginTop: 3, fontSize: 11 }}>
+                  {largest ? `${t("Most concentrated", "Staerkste Konzentration")}: ${largest.symbol}` : "-"} • {smallest ? `${t("Smallest", "Kleinste")}: ${smallest.symbol}` : "-"}
+                </Text>
+                <View style={{ marginTop: 7, gap: 7 }}>
+                  {rows.map((row) => {
+                    const alloc = totalValue > 0 ? (row.value / totalValue) * 100 : 0;
+                    return (
+                      <View key={`detail_${row.holding.id}`} style={{ borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 8 }}>
+                        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                          <Text numberOfLines={1} style={{ color: colors.text, fontSize: 12, fontWeight: "800", flex: 1 }}>
+                            {row.asset.symbol} • {row.asset.name}
+                          </Text>
+                          <Text style={{ color: row.isLivePrice ? "#5CE0AB" : "#F4A261", fontSize: 11, fontWeight: "700" }}>
+                            {row.isLivePrice ? t("Live", "Live") : t("Fallback", "Fallback")}
+                          </Text>
+                        </View>
+                        <Text style={{ color: colors.subtext, marginTop: 4, fontSize: 11 }}>
+                          {t("Value", "Wert")} {toMoney(row.value, settings.currency, settings.language)} • {t("Allocation", "Allokation")} {alloc.toFixed(2)}%
+                        </Text>
+                        <Text style={{ color: row.pnl >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 2, fontSize: 11, fontWeight: "700" }}>
+                          {t("PnL", "P&L")} {toMoney(row.pnl, settings.currency, settings.language)} ({pct(row.pnlPct)})
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+
+        <ActionButton
+          label={showHoldingForm ? t("Close Add Position", "Position-Hinzufuegen schliessen") : t("Add Position", "Position hinzufuegen")}
+          onPress={() => setShowHoldingForm((v) => !v)}
+          style={{ marginBottom: 10 }}
+        />
 
         <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12 }}>
           {showHoldingForm ? (
@@ -470,21 +846,24 @@ export default function PortfolioScreen() {
           </View>
 
           <FormInput
-            label="Universal Asset Search"
+            label={t("Universal Asset Search", "Universelle Asset-Suche")}
             value={query}
             onChangeText={setQuery}
-            placeholder="Search symbol/name globally (stocks, ETFs, crypto)"
-            help="Type ticker or name (e.g., AAPL, VOO, Bitcoin)."
+            placeholder={t("Search symbol/name globally (stocks, ETFs, crypto)", "Symbol/Name global suchen (Aktien, ETFs, Krypto)")}
+            help={t("Type ticker or name (e.g., AAPL, VOO, Bitcoin).", "Ticker oder Namen eingeben (z.B. AAPL, VOO, Bitcoin).")}
             style={{ marginTop: 8 }}
           />
 
           <Text style={{ color: colors.subtext, marginTop: 6, fontSize: 12 }}>
-            Universal search uses Yahoo Finance + CoinGecko for broad coverage across major exchanges.
+            {t(
+              "Universal search uses Yahoo Finance + CoinGecko for broad coverage across major exchanges.",
+              "Universelle Suche nutzt Yahoo Finance + CoinGecko fuer breite Abdeckung ueber grosse Boersen."
+            )}
           </Text>
 
           {!!selectedExternal && (
             <Text style={{ color: colors.text, marginTop: 6, fontSize: 12 }}>
-              Selected from universal: {selectedExternal.symbol} • {selectedExternal.name} • {selectedExternal.kind.toUpperCase()}
+              {t("Selected from universal", "Aus universeller Suche gewaehlt")}: {selectedExternal.symbol} • {selectedExternal.name} • {selectedExternal.kind.toUpperCase()}
             </Text>
           )}
 
@@ -521,6 +900,8 @@ export default function PortfolioScreen() {
                       onPress={() => {
                         setSelectedExternal(asset);
                         setSelectedAssetId("");
+                        const externalCurrency = normalizeCurrency(asset.currency);
+                        if (externalCurrency) setPurchaseCurrency(externalCurrency);
                         if (asset.lastPrice && Number.isFinite(asset.lastPrice)) {
                           setAvgCost(String(asset.lastPrice));
                         }
@@ -544,7 +925,7 @@ export default function PortfolioScreen() {
               {searchLoading && (
                 <View style={{ marginTop: 8, flexDirection: "row", alignItems: "center", gap: 8 }}>
                   <ActivityIndicator size="small" color="#83C8FF" />
-                  <Text style={{ color: colors.subtext, fontSize: 12 }}>Searching global listings...</Text>
+                  <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Searching global listings...", "Suche globale Listings...")}</Text>
                 </View>
               )}
             </ScrollView>
@@ -555,54 +936,101 @@ export default function PortfolioScreen() {
           )}
 
           <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
-            <FormInput value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" label="Quantity" placeholder="e.g. 2.5" help="How many units/shares you own." style={{ flex: 1 }} />
-            <FormInput value={avgCost} onChangeText={setAvgCost} keyboardType="decimal-pad" label="Average Cost Basis" placeholder="e.g. 420.50" help="Average buy price per unit/share." style={{ flex: 1 }} />
+            <FormInput value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" label={t("Quantity", "Menge")} placeholder={t("e.g. 2.5", "z.B. 2,5")} help={t("How many units/shares you own.", "Wie viele Einheiten/Anteile du besitzt.")} style={{ flex: 1 }} />
+            <FormInput
+              value={avgCost}
+              onChangeText={setAvgCost}
+              keyboardType="decimal-pad"
+              label={`${t("Average Cost Basis", "Durchschn. Einstandskurs")} (${purchaseCurrency})`}
+              placeholder="e.g. 420.50"
+              help={`${t("Purchase currency converts into portfolio display currency", "Kaufwaehrung wird automatisch in die Portfolio-Anzeigewaehrung umgerechnet")} (${settings.currency}).`}
+              style={{ flex: 1 }}
+            />
+          </View>
+          <View style={{ marginTop: 6, flexDirection: "row", gap: 8 }}>
+            {(["USD", "EUR"] as const).map((cur) => {
+              const active = purchaseCurrency === cur;
+              return (
+                <Pressable
+                  key={`buy_cur_${cur}`}
+                  onPress={() => setPurchaseCurrency(cur)}
+                  style={({ pressed }) => ({
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: active ? "#5F43B2" : colors.border,
+                    backgroundColor: pressed ? (colors.dark ? "#151522" : "#EDF2FF") : active ? (colors.dark ? "#17132A" : "#EEE8FF") : colors.surface,
+                    paddingHorizontal: 10,
+                    paddingVertical: 7,
+                  })}
+                >
+                  <Text style={{ color: active ? "#7E5CE6" : colors.subtext, fontWeight: "700", fontSize: 12 }}>{cur}</Text>
+                </Pressable>
+              );
+            })}
           </View>
           <View style={{ marginTop: 8, flexDirection: "row", justifyContent: "flex-end" }}>
             <ActionButton
-              label="Add To Portfolio"
+              label={t("Add To Portfolio", "Zum Portfolio hinzufuegen")}
               onPress={() => {
                 if (selectedExternal) {
                   const parsedQty = parseLocaleNumber(quantity);
                   const parsedAvg = parseLocaleNumber(avgCost);
                   if (!(parsedQty > 0) || !(parsedAvg >= 0)) {
-                    setAddStatus("Enter a valid quantity and cost.");
+                    setAddStatus(t("Enter a valid quantity and cost.", "Bitte gueltige Menge und Kosten eingeben."));
                     return;
                   }
+                  const existing = holdings.find(
+                    (h) => h.symbol === selectedExternal.symbol.toUpperCase() && h.kind === selectedExternal.kind
+                  );
+                  const targetCostCurrency = normalizeCurrency(existing?.costCurrency) ?? purchaseCurrency;
+                  const avgCostStored = convertCurrencyAmount(parsedAvg, purchaseCurrency, targetCostCurrency, usdPerEur);
+                  const lastPriceCurrency = normalizeCurrency(selectedExternal.currency) ?? purchaseCurrency;
+                  const manualPrice = Number.isFinite(selectedExternal.lastPrice ?? NaN)
+                    ? convertCurrencyAmount(Number(selectedExternal.lastPrice), lastPriceCurrency, settings.currency, usdPerEur)
+                    : undefined;
                   addHolding({
                     symbol: selectedExternal.symbol,
+                    quoteSymbol: selectedExternal.kind === "crypto" ? undefined : selectedExternal.symbol.toUpperCase(),
                     name: selectedExternal.name,
                     kind: selectedExternal.kind,
                     coinGeckoId: selectedExternal.coinGeckoId,
                     exchange: selectedExternal.exchange,
                     quantity: parsedQty,
-                    avgCost: parsedAvg,
-                    manualPrice: selectedExternal.kind === "crypto" ? undefined : selectedExternal.lastPrice,
+                    avgCost: avgCostStored,
+                    costCurrency: targetCostCurrency,
+                    manualPrice: selectedExternal.kind === "crypto" ? undefined : manualPrice,
                   });
-                  setAddStatus(`Added ${selectedExternal.symbol.toUpperCase()} to portfolio.`);
+                  setAddStatus(`${t("Added", "Hinzugefuegt")}: ${selectedExternal.symbol.toUpperCase()} ${t("to portfolio.", "zum Portfolio.")}`);
                   setQuantity("1");
                   return;
                 }
                 if (!selectedAsset) {
-                  setAddStatus("Select an asset first.");
+                  setAddStatus(t("Select an asset first.", "Bitte zuerst ein Asset waehlen."));
                   return;
                 }
                 const parsedQty = parseLocaleNumber(quantity);
                 const parsedAvg = parseLocaleNumber(avgCost);
                 if (!(parsedQty > 0) || !(parsedAvg >= 0)) {
-                  setAddStatus("Enter a valid quantity and cost.");
+                  setAddStatus(t("Enter a valid quantity and cost.", "Bitte gueltige Menge und Kosten eingeben."));
                   return;
                 }
-                addHolding({
-                  assetId: selectedAsset.id,
-                  symbol: selectedAsset.symbol,
-                  name: selectedAsset.name,
-                  kind: selectedAsset.kind,
-                  coinGeckoId: selectedAsset.coinGeckoId,
-                  quantity: parsedQty,
-                  avgCost: parsedAvg,
+                const existing = holdings.find(
+                  (h) => h.symbol === selectedAsset.symbol.toUpperCase() && h.kind === selectedAsset.kind
+                );
+                const targetCostCurrency = normalizeCurrency(existing?.costCurrency) ?? purchaseCurrency;
+                const avgCostStored = convertCurrencyAmount(parsedAvg, purchaseCurrency, targetCostCurrency, usdPerEur);
+                  addHolding({
+                    assetId: selectedAsset.id,
+                    symbol: selectedAsset.symbol,
+                    quoteSymbol: selectedAsset.symbol,
+                    name: selectedAsset.name,
+                    kind: selectedAsset.kind,
+                    coinGeckoId: selectedAsset.coinGeckoId,
+                    quantity: parsedQty,
+                    avgCost: avgCostStored,
+                    costCurrency: targetCostCurrency,
                 });
-                setAddStatus(`Added ${selectedAsset.symbol.toUpperCase()} to portfolio.`);
+                setAddStatus(`${t("Added", "Hinzugefuegt")}: ${selectedAsset.symbol.toUpperCase()} ${t("to portfolio.", "zum Portfolio.")}`);
                 setQuantity("1");
               }}
             />
@@ -614,29 +1042,46 @@ export default function PortfolioScreen() {
 
         <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-            <Text style={{ color: colors.text, fontWeight: "800" }}>Transaction Tracker</Text>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Transaction Tracker", "Transaktions-Tracker")}</Text>
             <View style={{ flexDirection: "row", gap: 8, flexShrink: 1 }}>
               <ActionButton
-                label={showTransactionsPanel ? "Collapse" : "Expand"}
+                label={showTransactionsPanel ? t("Collapse", "Einklappen") : t("Expand", "Ausklappen")}
                 onPress={() => setShowTransactionsPanel((v) => !v)}
                 style={{ minWidth: 98, minHeight: 38, paddingHorizontal: 10 }}
               />
               <ActionButton
-                label={showTxForm ? "Close" : "Add Tx"}
+                label={showTxForm ? t("Close", "Schliessen") : t("Add Tx", "Transaktion hinzufuegen")}
                 onPress={() => setShowTxForm((v) => !v)}
                 style={{ minWidth: 118, minHeight: 38, paddingHorizontal: 10 }}
               />
             </View>
           </View>
+          <View style={{ marginTop: 8, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <Text style={{ color: colors.subtext, fontSize: 12, flex: 1 }}>
+              {t(
+                "Import broker/exchange statement and auto-create portfolio transactions.",
+                "Broker-/Boersen-Auszug importieren und Portfolio-Transaktionen automatisch erstellen."
+              )}
+            </Text>
+            <ActionButton
+              label={importBusy ? t("Importing...", "Importiere...") : t("Import File", "Datei importieren")}
+              onPress={() => {
+                if (importBusy) return;
+                void importTransactions();
+              }}
+              style={{ minWidth: 104 }}
+            />
+          </View>
+          {!!importStatus && <Text style={{ color: colors.subtext, marginTop: 6, fontSize: 12 }}>{importStatus}</Text>}
           {showTransactionsPanel && showTxForm ? (
             <>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-            <FormInput value={txSymbol} onChangeText={setTxSymbol} label="Symbol" placeholder="AAPL / BTC / VOO" style={{ flex: 1 }} />
-            <FormInput value={txQty} onChangeText={setTxQty} label="Quantity" keyboardType="decimal-pad" placeholder="1" style={{ flex: 1 }} />
+            <FormInput value={txSymbol} onChangeText={setTxSymbol} label={t("Symbol", "Symbol")} placeholder="AAPL / BTC / VOO" style={{ flex: 1 }} />
+            <FormInput value={txQty} onChangeText={setTxQty} label={t("Quantity", "Menge")} keyboardType="decimal-pad" placeholder="1" style={{ flex: 1 }} />
           </View>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-            <FormInput value={txPrice} onChangeText={setTxPrice} label="Price" keyboardType="decimal-pad" placeholder="100" style={{ flex: 1 }} />
-            <FormInput value={txFee} onChangeText={setTxFee} label="Fee" keyboardType="decimal-pad" placeholder="0" style={{ flex: 1 }} />
+            <FormInput value={txPrice} onChangeText={setTxPrice} label={t("Price", "Preis")} keyboardType="decimal-pad" placeholder="100" style={{ flex: 1 }} />
+            <FormInput value={txFee} onChangeText={setTxFee} label={t("Fee", "Gebuehr")} keyboardType="decimal-pad" placeholder="0" style={{ flex: 1 }} />
           </View>
           <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
             {(["buy", "sell"] as const).map((side) => (
@@ -656,7 +1101,7 @@ export default function PortfolioScreen() {
               </Pressable>
             ))}
             <ActionButton
-              label="Add Transaction"
+              label={t("Add Transaction", "Transaktion hinzufuegen")}
               onPress={() => {
                 const symbol = txSymbol.trim().toUpperCase();
                 if (!symbol) return;
@@ -664,14 +1109,16 @@ export default function PortfolioScreen() {
                 const parsedQty = parseLocaleNumber(txQty);
                 const parsedPrice = parseLocaleNumber(txPrice);
                 const parsedFee = parseLocaleNumber(txFee);
+                const targetCurrency = normalizeCurrency(holding?.costCurrency) ?? settings.currency;
                 addTransaction({
                   holdingId: holding?.id,
                   symbol,
                   kind: holding?.kind ?? "stock",
                   side: txSide,
                   quantity: Number.isFinite(parsedQty) ? parsedQty : 0,
-                  price: Number.isFinite(parsedPrice) ? parsedPrice : 0,
-                  fee: Number.isFinite(parsedFee) ? parsedFee : 0,
+                  price: convertCurrencyAmount(Number.isFinite(parsedPrice) ? parsedPrice : 0, settings.currency, targetCurrency, usdPerEur),
+                  currency: targetCurrency,
+                  fee: convertCurrencyAmount(Number.isFinite(parsedFee) ? parsedFee : 0, settings.currency, targetCurrency, usdPerEur),
                 });
                 setTxQty("1");
                 setTxFee("0");
@@ -684,7 +1131,7 @@ export default function PortfolioScreen() {
             <View style={{ marginTop: 10 }}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <Text style={{ color: colors.subtext, fontSize: 12, flex: 1, paddingRight: 8 }}>
-                  Showing {Math.min(transactions.length, showAllTransactions ? transactions.length : 20)} of {transactions.length}
+                  {t("Showing", "Zeige")} {Math.min(transactions.length, showAllTransactions ? transactions.length : 20)} {t("of", "von")} {transactions.length}
                 </Text>
                 <Pressable
                   onPress={() => setShowAllTransactions((v) => !v)}
@@ -698,42 +1145,44 @@ export default function PortfolioScreen() {
                   })}
                 >
                   <Text style={{ color: "#8E63F0", fontSize: 12, fontWeight: "700" }}>
-                    {showAllTransactions ? "Show recent only" : "Show all"}
+                    {showAllTransactions ? t("Show recent only", "Nur letzte anzeigen") : t("Show all", "Alle anzeigen")}
                   </Text>
                 </Pressable>
               </View>
               <View style={{ gap: 7 }}>
                 {(showAllTransactions ? transactions : transactions.slice(0, 20)).map((tx) => (
               <View key={tx.id} style={{ borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 9 }}>
-                <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                  <Text numberOfLines={1} style={{ color: colors.text, fontWeight: "700", flex: 1, paddingRight: 8 }}>{tx.symbol} • {tx.side.toUpperCase()}</Text>
-                  <ActionButton label="Remove" onPress={() => removeTransaction(tx.id)} style={{ minWidth: 92 }} />
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                  <Text numberOfLines={2} style={{ color: colors.text, fontWeight: "700", flex: 1 }}>{tx.symbol} • {tx.side.toUpperCase()}</Text>
+                  <ActionButton label={t("Remove", "Entfernen")} onPress={() => removeTransaction(tx.id)} style={{ minWidth: 76, paddingHorizontal: 10 }} />
                 </View>
-                <Text style={{ color: colors.subtext, marginTop: 3 }}>Qty {tx.quantity} • Price {toMoney(tx.price, settings.currency, settings.language)} • Fee {toMoney(tx.fee, settings.currency, settings.language)}</Text>
+                <Text style={{ color: colors.subtext, marginTop: 3 }}>
+                  {t("Qty", "Menge")} {tx.quantity} • {t("Price", "Preis")} {toMoney(convertCurrencyAmount(tx.price, normalizeCurrency(tx.currency) ?? settings.currency, settings.currency, usdPerEur), settings.currency, settings.language)} • {t("Fee", "Gebuehr")} {toMoney(convertCurrencyAmount(tx.fee, normalizeCurrency(tx.currency) ?? settings.currency, settings.currency, usdPerEur), settings.currency, settings.language)}
+                </Text>
               </View>
                 ))}
-                {!transactions.length && <Text style={{ color: colors.subtext, marginTop: 2 }}>No transactions logged yet.</Text>}
+                {!transactions.length && <Text style={{ color: colors.subtext, marginTop: 2 }}>{t("No transactions logged yet.", "Noch keine Transaktionen erfasst.")}</Text>}
               </View>
 
               <View style={{ marginTop: 12, marginBottom: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }}>
-                <Text style={{ color: colors.text, fontWeight: "800" }}>Open Positions ({rows.length})</Text>
+                <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Open Positions", "Offene Positionen")} ({rows.length})</Text>
               </View>
               <View style={{ gap: 8 }}>
                 {rows.map((row) => (
                   <View key={row.holding.id} style={{ borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                      <Text numberOfLines={1} style={{ color: colors.text, fontWeight: "800", flex: 1, paddingRight: 8 }}>{row.asset?.symbol} • {row.asset?.name}</Text>
-                      <ActionButton label="Remove" onPress={() => removeHolding(row.holding.id)} style={{ minWidth: 92 }} />
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                      <Text numberOfLines={2} style={{ color: colors.text, fontWeight: "800", flex: 1 }}>{row.asset?.symbol} • {row.asset?.name}</Text>
+                      <ActionButton label={t("Remove", "Entfernen")} onPress={() => removeHolding(row.holding.id)} style={{ minWidth: 76, paddingHorizontal: 10 }} />
                     </View>
-                    <Text style={{ color: colors.subtext, marginTop: 4 }}>Qty {row.holding.quantity} • Avg {toMoney(row.holding.avgCost, settings.currency, settings.language)} • Market {toMoney(row.marketPrice ?? 0, settings.currency, settings.language)}</Text>
-                    <Text style={{ color: row.pnl >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "700" }}>Value {toMoney(row.value, settings.currency, settings.language)} • PnL {toMoney(row.pnl, settings.currency, settings.language)} ({pct(row.pnlPct)})</Text>
+                    <Text style={{ color: colors.subtext, marginTop: 4 }}>{t("Qty", "Menge")} {row.holding.quantity} • {t("Avg", "Durchschn.")} {toMoney(row.avgCostDisplay, settings.currency, settings.language)} • {t("Market", "Markt")} {toMoney(row.marketPrice ?? 0, settings.currency, settings.language)}</Text>
+                    <Text style={{ color: row.pnl >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "700" }}>{t("Value", "Wert")} {toMoney(row.value, settings.currency, settings.language)} • {t("PnL", "P&L")} {toMoney(row.pnl, settings.currency, settings.language)} ({pct(row.pnlPct)})</Text>
                     <Text style={{ color: colors.subtext, marginTop: 2, fontSize: 12 }}>
                       Allocation {totalValue > 0 ? `${((row.value / totalValue) * 100).toFixed(2)}%` : "-"} • Cost Basis {toMoney(row.cost, settings.currency, settings.language)}
                     </Text>
                     <View style={{ flexDirection: "row", gap: 8, marginTop: 6 }}>
                       <Pressable
                         onPress={() => {
-                          const currentPrice = row.marketPrice ?? row.holding.avgCost;
+                          const currentPrice = row.marketPrice ?? row.avgCostDisplay;
                           addAlert({
                             assetId: row.holding.kind === "crypto" ? (row.holding.coinGeckoId || row.holding.symbol.toLowerCase()) : row.holding.symbol.toUpperCase(),
                             symbol: row.holding.symbol,
@@ -754,7 +1203,7 @@ export default function PortfolioScreen() {
                           paddingVertical: 7,
                         })}
                       >
-                        <Text style={{ color: colors.text, fontWeight: "700", fontSize: 12 }}>Set +5% alert</Text>
+                        <Text style={{ color: colors.text, fontWeight: "700", fontSize: 12 }}>{t("Set +5% alert", "+5%-Alarm setzen")}</Text>
                       </Pressable>
                     </View>
                     <View style={{ marginTop: 6 }}>
@@ -765,33 +1214,33 @@ export default function PortfolioScreen() {
                           updateHolding(row.holding.id, { annualYieldPct: Number.isFinite(parsed) ? parsed : 0 });
                         }}
                         keyboardType="decimal-pad"
-                        label="Yield % (Optional)"
+                        label={t("Yield % (Optional)", "Rendite % (optional)")}
                         placeholder="0"
-                        help="Optional income estimate only. Does not affect portfolio tracking."
+                        help={t("Optional income estimate only. Does not affect portfolio tracking.", "Nur optionale Einkommensschaetzung. Beeinflusst Portfolio-Tracking nicht.")}
                         style={{ paddingVertical: 7 }}
                       />
                     </View>
                     {row.asset?.kind !== "crypto" && (
                       <FormInput
-                        value={String(row.holding.manualPrice ?? row.marketPrice ?? row.holding.avgCost)}
+                        value={String(row.holding.manualPrice ?? row.marketPrice ?? row.avgCostDisplay)}
                         onChangeText={(v) => {
                           const parsed = parseLocaleNumber(v);
                           updateHolding(row.holding.id, { manualPrice: Number.isFinite(parsed) ? parsed : 0 });
                         }}
                         keyboardType="decimal-pad"
-                        label="Manual Price Override"
-                        placeholder="Manual market price"
-                        help="Used when live quote is unavailable."
+                        label={t("Manual Price Override", "Manuelle Preisueberschreibung")}
+                        placeholder={t("Manual market price", "Manueller Marktpreis")}
+                        help={t("Used when live quote is unavailable.", "Wird genutzt, wenn kein Live-Kurs verfuegbar ist.")}
                         style={{ marginTop: 6, paddingVertical: 7 }}
                       />
                     )}
                   </View>
                 ))}
-                {!rows.length && <Text style={{ color: colors.subtext }}>No holdings yet.</Text>}
+                {!rows.length && <Text style={{ color: colors.subtext }}>{t("No holdings yet.", "Noch keine Positionen vorhanden.")}</Text>}
               </View>
             </View>
           ) : (
-            <Text style={{ color: colors.subtext, marginTop: 8, fontSize: 12 }}>Transactions and positions collapsed.</Text>
+            <Text style={{ color: colors.subtext, marginTop: 8, fontSize: 12 }}>{t("Transactions and positions collapsed.", "Transaktionen und Positionen eingeklappt.")}</Text>
           )}
         </View>
 

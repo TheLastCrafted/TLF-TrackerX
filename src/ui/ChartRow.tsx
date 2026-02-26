@@ -1,10 +1,16 @@
+import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useAppColors } from "./use-app-colors";
 
 export function ChartRow(props: {
   title: string;
   subtitle?: string;
+  preview?: string;
   onPress: () => void;
+  onLongPress?: () => void;
+  leading?: ReactNode;
+  rightAccessory?: ReactNode;
+  previewEmphasis?: boolean;
   isSaved?: boolean;
   onToggleSave?: () => void;
 }) {
@@ -13,6 +19,7 @@ export function ChartRow(props: {
   return (
     <Pressable
       onPress={props.onPress}
+      onLongPress={props.onLongPress}
       accessibilityRole="button"
       hitSlop={6}
       style={({ pressed }) => ({
@@ -30,11 +37,15 @@ export function ChartRow(props: {
       })}
     >
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-        <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700", flex: 1 }}>
-          {props.title}
-        </Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
+          {!!props.leading && <View>{props.leading}</View>}
+          <Text style={{ color: colors.text, fontSize: 16, fontWeight: "700", flex: 1 }}>
+            {props.title}
+          </Text>
+        </View>
 
-        {!!props.onToggleSave && (
+        {!!props.rightAccessory && props.rightAccessory}
+        {!props.rightAccessory && !!props.onToggleSave && (
           <Pressable
             onPress={props.onToggleSave}
             hitSlop={10}
@@ -57,6 +68,19 @@ export function ChartRow(props: {
       {!!props.subtitle && (
         <Text style={{ color: colors.subtext, marginTop: 6, fontSize: 13 }}>
           {props.subtitle}
+        </Text>
+      )}
+
+      {!!props.preview && (
+        <Text
+          style={{
+            color: colors.accent2,
+            marginTop: 6,
+            fontSize: props.previewEmphasis ? 16 : 12,
+            fontWeight: props.previewEmphasis ? "800" : "700",
+          }}
+        >
+          {props.preview}
         </Text>
       )}
     </Pressable>

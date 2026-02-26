@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
-import { useState } from "react";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { useRouter } from "expo-router";
+import { useRef, useState } from "react";
 import { Alert, Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -7,6 +9,7 @@ import { AppSettings, useSettings } from "../../src/state/settings";
 import { useI18n } from "../../src/i18n/use-i18n";
 import { usePriceAlerts } from "../../src/state/price-alerts";
 import { ActionButton } from "../../src/ui/action-button";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useHapticPress } from "../../src/ui/use-haptic-press";
 import { useAppColors } from "../../src/ui/use-app-colors";
@@ -14,10 +17,11 @@ import { useAppColors } from "../../src/ui/use-app-colors";
 type ChoiceOption<T extends string | number> = { value: T; label: string };
 
 function Section(props: { title: string; subtitle?: string; children: ReactNode }) {
+  const colors = useAppColors();
   return (
     <View style={{ marginTop: 18 }}>
-      <Text style={{ color: "#A9A9BB", fontWeight: "700", marginBottom: 4 }}>{props.title}</Text>
-      {!!props.subtitle && <Text style={{ color: "#72758B", marginBottom: 8 }}>{props.subtitle}</Text>}
+      <Text style={{ color: colors.subtext, fontWeight: "700", marginBottom: 4 }}>{props.title}</Text>
+      {!!props.subtitle && <Text style={{ color: colors.subtext, opacity: 0.8, marginBottom: 8 }}>{props.subtitle}</Text>}
       <View style={{ gap: 10 }}>{props.children}</View>
     </View>
   );
@@ -31,10 +35,10 @@ function ChoiceRow<T extends string | number>(props: {
   dark?: boolean;
   onPressFeedback?: () => void;
 }) {
-  const dark = props.dark !== false;
+  const colors = useAppColors();
   return (
-    <View style={{ borderRadius: 14, borderWidth: 1, borderColor: dark ? "#1A1A24" : "#D7E0F0", backgroundColor: dark ? "#0F0F16" : "#FFFFFF", padding: 12 }}>
-      <Text style={{ color: dark ? "#D7D7EA" : "#253550", fontWeight: "700", marginBottom: 8 }}>{props.label}</Text>
+    <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceElevated, padding: 12 }}>
+      <Text style={{ color: colors.text, fontWeight: "700", marginBottom: 8 }}>{props.label}</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {props.options.map((option) => {
           const active = option.value === props.value;
@@ -48,13 +52,13 @@ function ChoiceRow<T extends string | number>(props: {
               style={({ pressed }) => ({
                 borderRadius: 999,
                 borderWidth: 1,
-                borderColor: active ? "#5F43B2" : dark ? "#2A2A34" : "#CBD7EE",
-                backgroundColor: pressed ? (dark ? "#161624" : "#EAEFFD") : active ? (dark ? "#17132A" : "#EEE8FF") : dark ? "#11111A" : "#F6F9FF",
+                borderColor: active ? colors.accentBorder : colors.border,
+                backgroundColor: pressed ? colors.accentSoft : active ? colors.accentSoft : colors.surfaceAlt,
                 paddingHorizontal: 10,
                 paddingVertical: 6,
               })}
             >
-              <Text style={{ color: active ? "#B79DFF" : dark ? "#C8C8DA" : "#4E5F80", fontWeight: "700", fontSize: 12 }}>{option.label}</Text>
+              <Text style={{ color: active ? colors.accent : colors.subtext, fontWeight: "700", fontSize: 12 }}>{option.label}</Text>
             </Pressable>
           );
         })}
@@ -73,13 +77,13 @@ function ToggleRow(props: {
   offLabel?: string;
   onPressFeedback?: () => void;
 }) {
-  const dark = props.dark !== false;
+  const colors = useAppColors();
   return (
-    <View style={{ borderRadius: 14, borderWidth: 1, borderColor: dark ? "#1A1A24" : "#D7E0F0", backgroundColor: dark ? "#0F0F16" : "#FFFFFF", padding: 12 }}>
+    <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceElevated, padding: 12 }}>
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <View style={{ flex: 1 }}>
-          <Text style={{ color: dark ? "#D7D7EA" : "#253550", fontWeight: "700" }}>{props.label}</Text>
-          {!!props.description && <Text style={{ color: dark ? "#8F8FA1" : "#7485A2", marginTop: 4 }}>{props.description}</Text>}
+          <Text style={{ color: colors.text, fontWeight: "700" }}>{props.label}</Text>
+          {!!props.description && <Text style={{ color: colors.subtext, marginTop: 4 }}>{props.description}</Text>}
         </View>
 
         <Pressable
@@ -90,13 +94,13 @@ function ToggleRow(props: {
           style={({ pressed }) => ({
             borderRadius: 999,
             borderWidth: 1,
-            borderColor: props.value ? "#5F43B2" : dark ? "#2A2A34" : "#CBD7EE",
-            backgroundColor: pressed ? (dark ? "#161624" : "#EAEFFD") : props.value ? (dark ? "#17132A" : "#EEE8FF") : dark ? "#11111A" : "#F6F9FF",
+            borderColor: props.value ? colors.accentBorder : colors.border,
+            backgroundColor: pressed ? colors.accentSoft : props.value ? colors.accentSoft : colors.surfaceAlt,
             paddingHorizontal: 10,
             paddingVertical: 6,
           })}
         >
-          <Text style={{ color: props.value ? "#B79DFF" : dark ? "#C8C8DA" : "#4E5F80", fontWeight: "700", fontSize: 12 }}>
+          <Text style={{ color: props.value ? colors.accent : colors.subtext, fontWeight: "700", fontSize: 12 }}>
             {props.value ? (props.onLabel ?? "On") : (props.offLabel ?? "Off")}
           </Text>
         </Pressable>
@@ -106,6 +110,7 @@ function ToggleRow(props: {
 }
 
 export default function SettingsScreen() {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const { settings, update } = useSettings();
   const {
@@ -119,6 +124,10 @@ export default function SettingsScreen() {
   const colors = useAppColors();
   const haptic = useHapticPress();
   const [compactHeader, setCompactHeader] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  useLogoScrollToTop(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  });
   const { t } = useI18n();
 
   const toggleKeys: { key: keyof AppSettings; label: string; description?: string }[] = [
@@ -132,8 +141,9 @@ export default function SettingsScreen() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={{ flex: 1, backgroundColor: colors.background }}
-      contentContainerStyle={{ paddingHorizontal: SCREEN_HORIZONTAL_PADDING, paddingBottom: 28 }}
+      contentContainerStyle={{ paddingHorizontal: SCREEN_HORIZONTAL_PADDING, paddingBottom: 118 }}
       onScroll={(e) => setCompactHeader(e.nativeEvent.contentOffset.y > 140)}
       scrollEventThrottle={16}
     >
@@ -165,6 +175,22 @@ export default function SettingsScreen() {
         subtitle={t("Localize app behavior, tune chart defaults, and configure alerts/privacy.", "Sprache, Chart-Defaults und Datenschutz-Einstellungen konfigurieren.")}
       />
       <Section title={t("Localization", "Lokalisierung")} subtitle={t("Language and currency format", "Sprache und Waehrungsformat")}>
+        <ChoiceRow
+          label={t("Workspace Mode", "Arbeitsbereichsmodus")}
+          value={settings.workspaceMode}
+          options={[
+            { label: t("Hybrid", "Hybrid"), value: "hybrid" },
+            { label: t("Institutional", "Institutionell"), value: "institutional" },
+            { label: t("Personal Only", "Nur Personal"), value: "personal" },
+          ]}
+          onChange={(value) => {
+            update("workspaceMode", value);
+            update("institutionalMode", value === "institutional");
+          }}
+          dark={colors.dark}
+          onPressFeedback={() => haptic("light")}
+        />
+
         <ChoiceRow
           label={t("Language", "Sprache")}
           value={settings.language}
@@ -404,6 +430,58 @@ export default function SettingsScreen() {
           ))}
           {!alerts.length && <Text style={{ color: colors.subtext }}>{t("No alerts created yet.", "Noch keine Alarme erstellt.")}</Text>}
         </View>
+      </Section>
+
+      <Section
+        title={t("Legal & Privacy", "Rechtliches & Datenschutz")}
+        subtitle={t(
+          "Terms, privacy details, and data-source transparency.",
+          "AGB, Datenschutzdetails und Transparenz zu Datenquellen."
+        )}
+      >
+        {[
+          {
+            label: t("Terms & Conditions", "Nutzungsbedingungen"),
+            route: "/legal/terms",
+            subtitle: t("How the app may be used and key limitations.", "Wie die App genutzt werden darf und zentrale Haftungshinweise."),
+          },
+          {
+            label: t("Privacy Policy", "Datenschutzerklaerung"),
+            route: "/legal/privacy",
+            subtitle: t("What is stored, shared, and controlled on-device.", "Welche Daten lokal gespeichert, geteilt und kontrolliert werden."),
+          },
+          {
+            label: t("Data & Sources", "Daten & Quellen"),
+            route: "/legal/data",
+            subtitle: t("Market feed sources, delays, and reliability notes.", "Marktdatenquellen, Verzoegerungen und Zuverlaessigkeitshinweise."),
+          },
+        ].map((item) => (
+          <Pressable
+            key={item.route}
+            onPress={() => {
+              haptic("light");
+              router.push(item.route as never);
+            }}
+            style={({ pressed }) => ({
+              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: colors.border,
+              backgroundColor: pressed ? colors.surfaceAlt : colors.surfaceElevated,
+              paddingHorizontal: 12,
+              paddingVertical: 11,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+            })}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: colors.text, fontWeight: "800", fontSize: 13 }}>{item.label}</Text>
+              <Text style={{ color: colors.subtext, marginTop: 2, fontSize: 11 }}>{item.subtitle}</Text>
+            </View>
+            <MaterialIcons name="chevron-right" size={18} color={colors.subtext} />
+          </Pressable>
+        ))}
       </Section>
     </ScrollView>
   );

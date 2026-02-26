@@ -1,11 +1,14 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SPENDING_CATEGORIES, defaultBucketForCategory } from "../../src/catalog/spending-categories";
+import { useI18n } from "../../src/i18n/use-i18n";
+import { mapRowsToCashflow, pickLocalImportFile, readImportRowsFromAsset } from "../../src/lib/file-import";
 import { useFinanceTools } from "../../src/state/finance-tools";
 import { FormInput } from "../../src/ui/form-input";
 import { ActionButton } from "../../src/ui/action-button";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -18,12 +21,19 @@ export default function CashflowScreen() {
   const insets = useSafeAreaInsets();
   const { incomes, expenses, addIncome, updateIncome, removeIncome, addExpense, updateExpense, removeExpense } = useFinanceTools();
   const colors = useAppColors();
+  const { t, tx } = useI18n();
 
   const [compactHeader, setCompactHeader] = useState(false);
   const [showIncomeForm, setShowIncomeForm] = useState(false);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [showIncomeLogs, setShowIncomeLogs] = useState(false);
   const [showExpenseLogs, setShowExpenseLogs] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importStatus, setImportStatus] = useState<string | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  useLogoScrollToTop(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  });
   const [source, setSource] = useState("Salary");
   const [amount, setAmount] = useState("5000");
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
@@ -73,8 +83,38 @@ export default function CashflowScreen() {
   const maxCategory = Math.max(1, ...expenseByCategory.map((x) => x.value));
   const maxSource = Math.max(1, ...incomeBySource.map((x) => x.value));
 
+  const importStatement = async () => {
+    setImportStatus(null);
+    setImportBusy(true);
+    try {
+      const picked = await pickLocalImportFile();
+      if (!picked.ok) {
+        setImportStatus(picked.message);
+        return;
+      }
+      const loaded = await readImportRowsFromAsset(picked.asset);
+      if (!loaded.ok) {
+        setImportStatus(loaded.message);
+        return;
+      }
+      const mapped = mapRowsToCashflow(loaded.rows);
+      mapped.incomes.forEach((entry) => addIncome(entry));
+      mapped.expenses.forEach((entry) => addExpense(entry));
+      setImportStatus(
+        `${t("Imported", "Importiert")} ${mapped.incomes.length + mapped.expenses.length} ${t("rows", "Zeilen")} ` +
+        `(${mapped.incomes.length} ${t("income", "Einnahmen")}, ${mapped.expenses.length} ${t("expense", "Ausgaben")}). ` +
+        `${t("Skipped", "Uebersprungen")}: ${mapped.skipped}.`
+      );
+    } catch {
+      setImportStatus(t("Import failed. Try a clean CSV/XLSX export.", "Import fehlgeschlagen. Bitte eine saubere CSV/XLSX-Datei verwenden."));
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
   return (
     <ScrollView
+      ref={scrollRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={{ paddingBottom: 118 }}
       onScroll={(e) => setCompactHeader(e.nativeEvent.contentOffset.y > 120)}
@@ -99,39 +139,74 @@ export default function CashflowScreen() {
             alignItems: "center",
           }}
         >
-          <Text style={{ color: colors.text, fontWeight: "800" }}>Cashflow</Text>
-          <Text style={{ color: colors.subtext, fontSize: 12 }}>{byMonth.length} months tracked</Text>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{tx("Cashflow")}</Text>
+          <Text style={{ color: colors.subtext, fontSize: 12 }}>{byMonth.length} {t("months tracked", "Monate erfasst")}</Text>
         </View>
       )}
 
-      <TabHeader title="Cashflow" subtitle="Track inflows and outflows with category analytics, trend bars, and source intelligence." />
+      <TabHeader
+        title={tx("Cashflow")}
+        subtitle={t(
+          "Track inflows and outflows with category analytics, trend bars, and source intelligence.",
+          "Verfolge Ein- und Auszahlungen mit Kategorie-Analysen, Trendbalken und Quellen-Insights."
+        )}
+      />
 
       <View style={{ paddingHorizontal: SCREEN_HORIZONTAL_PADDING }}>
+        <View style={{ marginBottom: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Import Statement", "Kontoauszug importieren")}</Text>
+              <Text style={{ color: colors.subtext, marginTop: 2, fontSize: 12 }}>
+                {t(
+                  "Upload CSV/XLSX/JSON/TXT and auto-create income + expense entries with categories.",
+                  "CSV/XLSX/JSON/TXT hochladen und Einnahmen + Ausgaben mit Kategorien automatisch erstellen."
+                )}
+              </Text>
+            </View>
+            <ActionButton
+              label={importBusy ? t("Importing...", "Importiere...") : t("Import File", "Datei importieren")}
+              onPress={() => {
+                if (importBusy) return;
+                void importStatement();
+              }}
+              style={{ minWidth: 106 }}
+            />
+          </View>
+          {!!importStatus && <Text style={{ color: colors.subtext, marginTop: 7, fontSize: 12 }}>{importStatus}</Text>}
+        </View>
+
         <View style={{ marginBottom: 10, flexDirection: "row", gap: 10 }}>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Latest Net</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Latest Net", "Letztes Netto")}</Text>
             <Text style={{ color: latest.net >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "900" }}>{toMoney(latest.net)}</Text>
           </View>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Savings Rate</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Savings Rate", "Sparquote")}</Text>
             <Text style={{ color: savingsRate >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "900" }}>{savingsRate.toFixed(2)}%</Text>
           </View>
         </View>
 
         <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 8 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ color: colors.text, fontWeight: "800" }}>Log Income</Text>
-            <ActionButton label={showIncomeForm ? "Close" : "Add Income"} onPress={() => setShowIncomeForm((v) => !v)}/>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Log Income", "Einnahme erfassen")}</Text>
+            <ActionButton label={showIncomeForm ? t("Close", "Schliessen") : t("Add Income", "Einnahme hinzufuegen")} onPress={() => setShowIncomeForm((v) => !v)}/>
           </View>
           {showIncomeForm ? (
             <>
-          <FormInput value={source} onChangeText={setSource} label="Income Source" placeholder="e.g. Salary, Freelance, Dividends" help="Where this income came from." />
+          <FormInput
+            value={source}
+            onChangeText={setSource}
+            label={t("Income Source", "Einnahmequelle")}
+            placeholder={t("e.g. Salary, Freelance, Dividends", "z.B. Gehalt, Freelance, Dividenden")}
+            help={t("Where this income came from.", "Woher diese Einnahme stammt.")}
+          />
           <View style={{ flexDirection: "row", gap: 8 }}>
-            <FormInput value={amount} onChangeText={setAmount} keyboardType="decimal-pad" label="Income Amount" placeholder="e.g. 5000" help="Gross amount received." style={{ flex: 1 }} />
-            <FormInput value={date} onChangeText={setDate} label="Income Date" placeholder="YYYY-MM-DD" help="Entry date in ISO format." style={{ flex: 1 }} />
+            <FormInput value={amount} onChangeText={setAmount} keyboardType="decimal-pad" label={t("Income Amount", "Einnahmebetrag")} placeholder={t("e.g. 5000", "z.B. 5000")} help={t("Gross amount received.", "Erhaltener Bruttobetrag.")} style={{ flex: 1 }} />
+            <FormInput value={date} onChangeText={setDate} label={t("Income Date", "Einnahmedatum")} placeholder="YYYY-MM-DD" help={t("Entry date in ISO format.", "Eintragsdatum im ISO-Format.")} style={{ flex: 1 }} />
           </View>
           <ActionButton
-            label="Add Income"
+            label={t("Add Income", "Einnahme hinzufuegen")}
             onPress={() => addIncome({ source, amount: Number(amount), date })}
             style={{ alignSelf: "flex-start" }}
           />
@@ -141,12 +216,12 @@ export default function CashflowScreen() {
 
         <View style={{ marginTop: 10, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 8 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ color: colors.text, fontWeight: "800" }}>Log Expense</Text>
-            <ActionButton label={showExpenseForm ? "Close" : "Add Expense"} onPress={() => setShowExpenseForm((v) => !v)}/>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Log Expense", "Ausgabe erfassen")}</Text>
+            <ActionButton label={showExpenseForm ? t("Close", "Schliessen") : t("Add Expense", "Ausgabe hinzufuegen")} onPress={() => setShowExpenseForm((v) => !v)}/>
           </View>
           {showExpenseForm ? (
             <>
-          <Text style={{ color: colors.subtext, fontSize: 12 }}>Expense Category</Text>
+          <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Expense Category", "Ausgabenkategorie")}</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {SPENDING_CATEGORIES.map((cat) => {
               const active = expenseCategory === cat.name;
@@ -171,7 +246,7 @@ export default function CashflowScreen() {
               );
             })}
           </View>
-          <Text style={{ color: colors.subtext, fontSize: 12 }}>Expense Subcategory</Text>
+          <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Expense Subcategory", "Ausgabe-Unterkategorie")}</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {(selectedExpenseCategory?.subcategories ?? ["General"]).map((sub) => {
               const active = expenseSubcategory === sub;
@@ -194,12 +269,12 @@ export default function CashflowScreen() {
             })}
           </View>
           <View style={{ flexDirection: "row", gap: 8 }}>
-            <FormInput value={expenseAmount} onChangeText={setExpenseAmount} keyboardType="decimal-pad" label="Expense Amount" placeholder="e.g. 75" help="Money spent on this item." style={{ flex: 1 }} />
-            <FormInput value={expenseDate} onChangeText={setExpenseDate} label="Expense Date" placeholder="YYYY-MM-DD" help="Entry date in ISO format." style={{ flex: 1 }} />
+            <FormInput value={expenseAmount} onChangeText={setExpenseAmount} keyboardType="decimal-pad" label={t("Expense Amount", "Ausgabebetrag")} placeholder={t("e.g. 75", "z.B. 75")} help={t("Money spent on this item.", "Fuer diesen Posten ausgegebenes Geld.")} style={{ flex: 1 }} />
+            <FormInput value={expenseDate} onChangeText={setExpenseDate} label={t("Expense Date", "Ausgabedatum")} placeholder="YYYY-MM-DD" help={t("Entry date in ISO format.", "Eintragsdatum im ISO-Format.")} style={{ flex: 1 }} />
           </View>
-          <FormInput value={expenseNote} onChangeText={setExpenseNote} label="Expense Note (Optional)" placeholder="Short context..." help="Add details for later review." />
+          <FormInput value={expenseNote} onChangeText={setExpenseNote} label={t("Expense Note (Optional)", "Ausgaben-Notiz (optional)")} placeholder={t("Short context...", "Kurzer Kontext...")} help={t("Add details for later review.", "Details fuer spaetere Pruefung hinzufuegen.")} />
           <ActionButton
-            label="Add Expense"
+            label={t("Add Expense", "Ausgabe hinzufuegen")}
             onPress={() =>
               addExpense({
                 category: expenseCategory,
@@ -218,28 +293,28 @@ export default function CashflowScreen() {
 
         <View style={{ marginTop: 10, flexDirection: "row", gap: 10 }}>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Latest Income</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Latest Income", "Letzte Einnahmen")}</Text>
             <Text style={{ color: "#8ED3FF", marginTop: 4, fontWeight: "900" }}>{toMoney(latest.income)}</Text>
           </View>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Latest Expense</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Latest Expense", "Letzte Ausgaben")}</Text>
             <Text style={{ color: "#FF97A8", marginTop: 4, fontWeight: "900" }}>{toMoney(latest.expense)}</Text>
           </View>
         </View>
 
         <View style={{ marginTop: 10, flexDirection: "row", gap: 10 }}>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Avg Monthly Net</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Avg Monthly Net", "Durchschn. Monats-Netto")}</Text>
             <Text style={{ color: avgNet >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "900" }}>{toMoney(avgNet)}</Text>
           </View>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Latest Savings Rate</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Latest Savings Rate", "Letzte Sparquote")}</Text>
             <Text style={{ color: savingsRate >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "900" }}>{savingsRate.toFixed(2)}%</Text>
           </View>
         </View>
 
         <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-          <Text style={{ color: colors.text, fontWeight: "800" }}>Monthly Trend</Text>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Monthly Trend", "Monatstrend")}</Text>
           <View style={{ marginTop: 8, gap: 6 }}>
             {byMonth.slice(0, 12).map((row) => (
               <View key={row.month}>
@@ -251,12 +326,12 @@ export default function CashflowScreen() {
                 </View>
               </View>
             ))}
-            {!byMonth.length && <Text style={{ color: colors.subtext }}>No monthly history yet.</Text>}
+            {!byMonth.length && <Text style={{ color: colors.subtext }}>{t("No monthly history yet.", "Noch kein Monatsverlauf vorhanden.")}</Text>}
           </View>
         </View>
 
         <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-          <Text style={{ color: colors.text, fontWeight: "800" }}>Expense Category Breakdown</Text>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Expense Category Breakdown", "Ausgabenkategorien-Aufschluesselung")}</Text>
           <View style={{ marginTop: 8, gap: 7 }}>
             {expenseByCategory.slice(0, 8).map((row) => (
               <View key={row.name}>
@@ -269,12 +344,12 @@ export default function CashflowScreen() {
                 </View>
               </View>
             ))}
-            {!expenseByCategory.length && <Text style={{ color: colors.subtext }}>No expense categories yet.</Text>}
+            {!expenseByCategory.length && <Text style={{ color: colors.subtext }}>{t("No expense categories yet.", "Noch keine Ausgabenkategorien vorhanden.")}</Text>}
           </View>
         </View>
 
         <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-          <Text style={{ color: colors.text, fontWeight: "800" }}>Income Source Breakdown</Text>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Income Source Breakdown", "Einnahmequellen-Aufschluesselung")}</Text>
           <View style={{ marginTop: 8, gap: 7 }}>
             {incomeBySource.slice(0, 8).map((row) => (
               <View key={row.name}>
@@ -287,15 +362,15 @@ export default function CashflowScreen() {
                 </View>
               </View>
             ))}
-            {!incomeBySource.length && <Text style={{ color: colors.subtext }}>No income sources yet.</Text>}
+            {!incomeBySource.length && <Text style={{ color: colors.subtext }}>{t("No income sources yet.", "Noch keine Einnahmequellen vorhanden.")}</Text>}
           </View>
         </View>
 
         <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ color: colors.text, fontWeight: "800" }}>Logged Income</Text>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Logged Income", "Erfasste Einnahmen")}</Text>
             <ActionButton
-              label={showIncomeLogs ? "Collapse" : "Expand"}
+              label={showIncomeLogs ? t("Collapse", "Einklappen") : t("Expand", "Ausklappen")}
               onPress={() => setShowIncomeLogs((v) => !v)}
               style={{ minWidth: 100, minHeight: 38, paddingHorizontal: 10 }}
             />
@@ -306,24 +381,24 @@ export default function CashflowScreen() {
                 <View key={row.id} style={{ borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
                   <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                     <Text style={{ color: colors.text, fontWeight: "800" }}>{row.source}</Text>
-                    <ActionButton label="Remove" onPress={() => removeIncome(row.id)} style={{ minWidth: 96 }} />
+                    <ActionButton label={t("Remove", "Entfernen")} onPress={() => removeIncome(row.id)} style={{ minWidth: 96 }} />
                   </View>
                   <Text style={{ color: colors.subtext, marginTop: 4 }}>{row.date} • {toMoney(row.amount)}</Text>
-                  <FormInput value={String(row.amount)} onChangeText={(v) => updateIncome(row.id, { amount: Number(v) || 0 })} keyboardType="decimal-pad" label="Update Income Amount" style={{ marginTop: 6, paddingVertical: 7 }} />
+                  <FormInput value={String(row.amount)} onChangeText={(v) => updateIncome(row.id, { amount: Number(v) || 0 })} keyboardType="decimal-pad" label={t("Update Income Amount", "Einnahmebetrag aktualisieren")} style={{ marginTop: 6, paddingVertical: 7 }} />
                 </View>
               ))}
-              {!incomes.length && <Text style={{ color: colors.subtext }}>No income entries yet.</Text>}
+              {!incomes.length && <Text style={{ color: colors.subtext }}>{t("No income entries yet.", "Noch keine Einnahmen erfasst.")}</Text>}
             </View>
           ) : (
-            <Text style={{ color: colors.subtext, marginTop: 8, fontSize: 12 }}>Income entries collapsed.</Text>
+            <Text style={{ color: colors.subtext, marginTop: 8, fontSize: 12 }}>{t("Income entries collapsed.", "Einnahmen eingeklappt.")}</Text>
           )}
         </View>
 
         <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ color: colors.text, fontWeight: "800" }}>Logged Expenses</Text>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Logged Expenses", "Erfasste Ausgaben")}</Text>
             <ActionButton
-              label={showExpenseLogs ? "Collapse" : "Expand"}
+              label={showExpenseLogs ? t("Collapse", "Einklappen") : t("Expand", "Ausklappen")}
               onPress={() => setShowExpenseLogs((v) => !v)}
               style={{ minWidth: 100, minHeight: 38, paddingHorizontal: 10 }}
             />
@@ -334,17 +409,17 @@ export default function CashflowScreen() {
                 <View key={row.id} style={{ borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
                   <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                     <Text style={{ color: colors.text, fontWeight: "800" }}>{row.category} • {row.subcategory}</Text>
-                    <ActionButton label="Remove" onPress={() => removeExpense(row.id)} style={{ minWidth: 96 }} />
+                    <ActionButton label={t("Remove", "Entfernen")} onPress={() => removeExpense(row.id)} style={{ minWidth: 96 }} />
                   </View>
                   <Text style={{ color: colors.subtext, marginTop: 4 }}>{row.date} • {toMoney(row.amount)}</Text>
                   {!!row.note && <Text style={{ color: colors.subtext, marginTop: 4 }}>{row.note}</Text>}
-                  <FormInput value={String(row.amount)} onChangeText={(v) => updateExpense(row.id, { amount: Number(v) || 0 })} keyboardType="decimal-pad" label="Update Expense Amount" style={{ marginTop: 6, paddingVertical: 7 }} />
+                  <FormInput value={String(row.amount)} onChangeText={(v) => updateExpense(row.id, { amount: Number(v) || 0 })} keyboardType="decimal-pad" label={t("Update Expense Amount", "Ausgabebetrag aktualisieren")} style={{ marginTop: 6, paddingVertical: 7 }} />
                 </View>
               ))}
-              {!expenses.length && <Text style={{ color: colors.subtext }}>No expense entries yet.</Text>}
+              {!expenses.length && <Text style={{ color: colors.subtext }}>{t("No expense entries yet.", "Noch keine Ausgaben erfasst.")}</Text>}
             </View>
           ) : (
-            <Text style={{ color: colors.subtext, marginTop: 8, fontSize: 12 }}>Expense entries collapsed.</Text>
+            <Text style={{ color: colors.subtext, marginTop: 8, fontSize: 12 }}>{t("Expense entries collapsed.", "Ausgaben eingeklappt.")}</Text>
           )}
         </View>
       </View>

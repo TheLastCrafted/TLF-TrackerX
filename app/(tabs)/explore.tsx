@@ -1,15 +1,18 @@
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Animated, LayoutAnimation, Linking, Platform, Pressable, ScrollView, Text, UIManager, View } from "react-native";
+import { Animated, LayoutAnimation, Linking, Platform, Pressable, RefreshControl, ScrollView, Text, UIManager, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CHARTS } from "../../src/catalog/charts";
 import { fetchFredSeries } from "../../src/data/macro";
 import { useI18n } from "../../src/i18n/use-i18n";
+import { loadPersistedJson, savePersistedJson } from "../../src/lib/persistence";
 import { useSettings } from "../../src/state/settings";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
+import { RefreshFeedback, refreshControlProps } from "../../src/ui/refresh-feedback";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -112,6 +115,17 @@ function formatValue(value: number, format: "percent" | "number"): string {
   return value.toFixed(2);
 }
 
+const DEFAULT_MACRO_WIDGETS: MacroWidget[] = [
+  "rates",
+  "labor",
+  "inflation",
+  "risk",
+  "growth",
+  "credit",
+  "policy",
+  "bonds",
+];
+
 export default function ExploreScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -123,16 +137,7 @@ export default function ExploreScreen() {
   const [region, setRegion] = useState<Region>(initialRegion);
   const [kpis, setKpis] = useState<Record<string, number>>({});
   const [compactHeader, setCompactHeader] = useState(false);
-  const [enabledWidgets, setEnabledWidgets] = useState<MacroWidget[]>([
-    "rates",
-    "labor",
-    "inflation",
-    "risk",
-    "growth",
-    "credit",
-    "policy",
-    "bonds",
-  ]);
+  const [enabledWidgets, setEnabledWidgets] = useState<MacroWidget[]>(DEFAULT_MACRO_WIDGETS);
   const [showWidgetManager, setShowWidgetManager] = useState(false);
   const [editingLayout, setEditingLayout] = useState(false);
   const [draggingWidget, setDraggingWidget] = useState<MacroWidget | null>(null);
@@ -144,13 +149,53 @@ export default function ExploreScreen() {
   const dragOffsetsRef = useRef(new Map<MacroWidget, Animated.Value>());
   const dragOffsetXRef = useRef(new Map<MacroWidget, Animated.Value>());
   const [marketSummary, setMarketSummary] = useState<string>("");
-  const [calendarOpen, setCalendarOpen] = useState(true);
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [nowTs, setNowTs] = useState(Date.now());
+  const [layoutHydrated, setLayoutHydrated] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
 
   useEffect(() => {
     const id = setInterval(() => setNowTs(Date.now()), 60_000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const saved = await loadPersistedJson<{
+        enabledWidgets: MacroWidget[];
+        widgetSizes: Partial<Record<MacroWidget, MacroWidgetSize>>;
+      }>("macro_widgets_layout", { enabledWidgets: DEFAULT_MACRO_WIDGETS, widgetSizes: {} });
+      if (!alive) return;
+      const allowed = new Set<MacroWidget>([
+        "rates", "labor", "inflation", "liquidity", "fx", "risk", "growth",
+        "housing", "credit", "energy", "sentiment", "calendar", "policy",
+        "bonds", "manufacturing",
+      ]);
+      const nextWidgets = Array.isArray(saved.enabledWidgets)
+        ? saved.enabledWidgets.filter((id): id is MacroWidget => allowed.has(id as MacroWidget))
+        : DEFAULT_MACRO_WIDGETS;
+      setEnabledWidgets(nextWidgets.length ? nextWidgets : DEFAULT_MACRO_WIDGETS);
+      const validSizes: Partial<Record<MacroWidget, MacroWidgetSize>> = {};
+      if (saved.widgetSizes && typeof saved.widgetSizes === "object") {
+        for (const [key, value] of Object.entries(saved.widgetSizes)) {
+          if (allowed.has(key as MacroWidget) && (value === "sm" || value === "md" || value === "lg")) {
+            validSizes[key as MacroWidget] = value;
+          }
+        }
+      }
+      setWidgetSizes(validSizes);
+      setLayoutHydrated(true);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!layoutHydrated) return;
+    void savePersistedJson("macro_widgets_layout", { enabledWidgets, widgetSizes });
+  }, [enabledWidgets, widgetSizes, layoutHydrated]);
 
   useEffect(() => {
     if (!showWidgetManager && editingLayout) {
@@ -225,31 +270,34 @@ export default function ExploreScreen() {
     setRegion(settings.focusRegion === "Global" ? "All" : settings.focusRegion);
   }, [settings.focusRegion]);
 
-  useEffect(() => {
+  const reloadKpis = useCallback(async () => {
     const selectedDefs = KPI_DEFS.filter((k) => region === "All" || k.region === region);
-    let alive = true;
-
-    (async () => {
-      const results = await Promise.all(
-        selectedDefs.map(async (def) => {
-          try {
-            const points = await fetchFredSeries({ seriesId: def.seriesId, days: 3650 });
-            const last = points[points.length - 1]?.y;
-            return [def.id, typeof last === "number" ? last : NaN] as const;
-          } catch {
-            return [def.id, NaN] as const;
-          }
-        })
-      );
-
-      if (!alive) return;
-      setKpis(Object.fromEntries(results));
-    })();
-
-    return () => {
-      alive = false;
-    };
+    const results = await Promise.all(
+      selectedDefs.map(async (def) => {
+        try {
+          const points = await fetchFredSeries({ seriesId: def.seriesId, days: 3650 });
+          const last = points[points.length - 1]?.y;
+          return [def.id, typeof last === "number" ? last : NaN] as const;
+        } catch {
+          return [def.id, NaN] as const;
+        }
+      })
+    );
+    setKpis(Object.fromEntries(results));
   }, [region]);
+
+  useEffect(() => {
+    void reloadKpis();
+  }, [reloadKpis]);
+
+  const onManualRefresh = useCallback(async () => {
+    setManualRefreshing(true);
+    try {
+      await reloadKpis();
+    } finally {
+      setManualRefreshing(false);
+    }
+  }, [reloadKpis]);
 
   const filteredCharts = useMemo(() => {
     return CHARTS.filter((chart) => {
@@ -423,6 +471,10 @@ export default function ExploreScreen() {
   const WidgetCard = (props: { id: MacroWidget; children: ReactNode }) => (
     <Animated.View style={[widgetCardStyle(props.id), widgetFloatingStyle(props.id)]}>{props.children}</Animated.View>
   );
+  const pageScrollRef = useRef<ScrollView>(null);
+  useLogoScrollToTop(() => {
+    pageScrollRef.current?.scrollTo({ y: 0, animated: true });
+  });
   const generateSummary = () => {
     const usRate = Number.isFinite(kpis.us_rate) ? kpis.us_rate : NaN;
     const usUnemp = Number.isFinite(kpis.us_unemp) ? kpis.us_unemp : NaN;
@@ -450,12 +502,23 @@ export default function ExploreScreen() {
 
   return (
     <ScrollView
+      ref={pageScrollRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={{ paddingBottom: 118 }}
       onScroll={(e) => setCompactHeader(e.nativeEvent.contentOffset.y > 140)}
       scrollEventThrottle={16}
       scrollEnabled={!draggingWidget}
+      refreshControl={
+        <RefreshControl
+          refreshing={manualRefreshing}
+          onRefresh={() => {
+            void onManualRefresh();
+          }}
+          {...refreshControlProps(colors, "Refreshing macro data...")}
+        />
+      }
     >
+      <RefreshFeedback refreshing={manualRefreshing} colors={colors} label={t("Refreshing macro dashboard...", "Makro-Dashboard wird aktualisiert...")} />
       {compactHeader && (
         <View
           style={{

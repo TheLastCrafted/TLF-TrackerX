@@ -1,4 +1,5 @@
 import { FINANCIAL_ASSETS } from "../catalog/financial-assets";
+import { fetchWithWebProxy } from "./web-proxy";
 
 export type SearchAssetKind = "stock" | "etf" | "crypto";
 
@@ -64,7 +65,7 @@ async function searchYahoo(query: string, limit: number): Promise<UniversalAsset
     10,
     limit
   )}&newsCount=0&enableFuzzyQuery=false`;
-  const res = await fetch(url, {
+  const res = await fetchWithWebProxy(url, {
     headers: {
       Accept: "application/json",
     },
@@ -106,7 +107,7 @@ async function searchCoinGecko(query: string, limit: number): Promise<UniversalA
   }
 
   const url = `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(query)}`;
-  const res = await fetch(url, {
+  const res = await fetchWithWebProxy(url, {
     headers: {
       Accept: "application/json",
     },

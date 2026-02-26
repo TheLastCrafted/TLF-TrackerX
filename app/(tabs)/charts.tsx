@@ -1,6 +1,6 @@
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -10,6 +10,7 @@ import { searchUniversalAssets, UniversalAsset } from "../../src/data/asset-sear
 import { useI18n } from "../../src/i18n/use-i18n";
 import { useSettings } from "../../src/state/settings";
 import { useWatchlist } from "../../src/state/watchlist";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -38,6 +39,11 @@ export default function ChartsTab() {
   const [showLibraryControls, setShowLibraryControls] = useState(false);
   const [showAssetSearch, setShowAssetSearch] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Partial<Record<ChartCategory, boolean>>>({});
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollToTop = useCallback(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  }, []);
+  useLogoScrollToTop(scrollToTop);
 
   const localAssetRows = useMemo(() => {
     const qLocal = assetQuery.trim().toLowerCase();
@@ -104,6 +110,7 @@ export default function ChartsTab() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={{ paddingBottom: 118 }}
       onScroll={(e) => setCompactHeader(e.nativeEvent.contentOffset.y > 150)}

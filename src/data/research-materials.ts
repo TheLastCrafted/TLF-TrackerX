@@ -18,6 +18,13 @@ type MaterialSeed = {
   why: string;
 };
 
+function buildResearchImage(url: string): string | undefined {
+  const safe = String(url || "").trim();
+  if (!safe.startsWith("http://") && !safe.startsWith("https://")) return undefined;
+  // Use full-page previews so materials show an actual relevant visual instead of a tiny icon.
+  return `https://image.thum.io/get/width/1200/noanimate/${safe}`;
+}
+
 function slugify(input: string): string {
   return input
     .toLowerCase()
@@ -58,7 +65,7 @@ function buildTopic(topic: ResearchTopic, seeds: MaterialSeed[]): ResearchMateri
       url: seed.url,
       why: seed.why,
       explainer: longExplainer(seed, topic),
-      imageUrl: `https://picsum.photos/seed/${baseId}/1200/720`,
+      imageUrl: buildResearchImage(seed.url),
     };
   });
 }

@@ -20,20 +20,26 @@ export function ActionButton(props: {
         props.onPress();
       }}
       style={({ pressed }) => ({
-        borderRadius: 14,
+        borderRadius: 13,
         borderWidth: 1,
-        borderColor: "#5F43B2",
-        backgroundColor: pressed ? (colors.dark ? "#2A2152" : "#EEE6FF") : (colors.dark ? "#21193F" : "#F4EEFF"),
-        minHeight: 42,
-        minWidth: 120,
-        paddingVertical: 10,
-        paddingHorizontal: 14,
+        borderColor: colors.accentBorder,
+        backgroundColor: pressed ? (colors.dark ? "#2B2550" : "#EEE7FF") : colors.accentSoft,
+        minHeight: 40,
+        minWidth: 96,
+        maxWidth: "100%",
+        paddingVertical: 9,
+        paddingHorizontal: 12,
         alignItems: "center",
         justifyContent: "center",
+        flexShrink: 1,
+        shadowColor: colors.accent,
+        shadowOpacity: colors.dark ? 0.16 : 0.09,
+        shadowRadius: 7,
+        shadowOffset: { width: 0, height: 1 },
         ...(props.style ?? {}),
       })}
     >
-      <Text style={{ color: "#CBB6FF", fontWeight: "900", fontSize: 13 }}>{label}</Text>
+      <Text numberOfLines={1} adjustsFontSizeToFit style={{ color: colors.accent, fontWeight: "900", fontSize: 12.5 }}>{label}</Text>
     </Pressable>
   );
 }

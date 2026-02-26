@@ -7,9 +7,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFinanceTools } from "../../src/state/finance-tools";
 import { fetchCoinGeckoMarkets } from "../../src/data/coingecko";
 import { fetchYahooQuotes } from "../../src/data/quotes";
+import { FINANCIAL_ASSETS_BY_ID } from "../../src/catalog/financial-assets";
+import { searchUniversalAssets } from "../../src/data/asset-search";
 import { useI18n } from "../../src/i18n/use-i18n";
+import { loadPersistedJson, savePersistedJson } from "../../src/lib/persistence";
 import { useSettings } from "../../src/state/settings";
 import { HapticPressable as Pressable } from "../../src/ui/haptic-pressable";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -48,6 +52,14 @@ const PERSONAL_WIDGETS: { id: PersonalWidgetId; label: string; size: PersonalWid
   { id: "incomes_count", label: "Income Entries", size: "sm" },
 ];
 
+const DEFAULT_PERSONAL_WIDGETS: PersonalWidgetId[] = [
+  "portfolio_value",
+  "net_cashflow",
+  "budget_utilization",
+  "holdings_count",
+  "income_vs_expense",
+];
+
 export default function ToolsHomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -57,17 +69,18 @@ export default function ToolsHomeScreen() {
   const { holdings, budgets, expenses, incomes } = useFinanceTools();
   const [showWidgetPicker, setShowWidgetPicker] = useState(false);
   const [editingLayout, setEditingLayout] = useState(false);
-  const [selectedWidgets, setSelectedWidgets] = useState<PersonalWidgetId[]>([
-    "portfolio_value",
-    "net_cashflow",
-    "budget_utilization",
-  ]);
+  const [selectedWidgets, setSelectedWidgets] = useState<PersonalWidgetId[]>(DEFAULT_PERSONAL_WIDGETS);
   const [widgetSizes, setWidgetSizes] = useState<Partial<Record<PersonalWidgetId, PersonalWidgetSize>>>({});
+  const [layoutHydrated, setLayoutHydrated] = useState(false);
   const [draggingWidget, setDraggingWidget] = useState<PersonalWidgetId | null>(null);
   const [dragHint, setDragHint] = useState<string | null>(null);
   const dragTouchRef = useRef<{ id: PersonalWidgetId | null; x: number; y: number }>({ id: null, x: 0, y: 0 });
   const dragStartXRef = useRef(0);
   const dragStartYRef = useRef(0);
+  const scrollRef = useRef<ScrollView>(null);
+  useLogoScrollToTop(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  });
   const dragOffsetsRef = useRef(new Map<PersonalWidgetId, Animated.Value>());
   const dragOffsetXRef = useRef(new Map<PersonalWidgetId, Animated.Value>());
 
@@ -75,16 +88,35 @@ export default function ToolsHomeScreen() {
   const [cryptoDailyPct, setCryptoDailyPct] = useState<Record<string, number>>({});
   const [equityPrices, setEquityPrices] = useState<Record<string, number>>({});
   const [equityPreviousPrices, setEquityPreviousPrices] = useState<Record<string, number>>({});
+  const resolvedLiveRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let alive = true;
-    const ids = Array.from(new Set(holdings.map((h) => h.coinGeckoId).filter((id): id is string => Boolean(id))));
-    if (!ids.length) {
-      setCryptoPrices({});
-      setCryptoDailyPct({});
-      return;
-    }
     const poll = async () => {
+      const mappedIds = holdings
+        .filter((h) => h.kind === "crypto")
+        .map((h) => h.coinGeckoId || FINANCIAL_ASSETS_BY_ID[h.assetId ?? ""]?.coinGeckoId)
+        .filter((id): id is string => Boolean(id));
+      const unresolved = holdings.filter((h) => h.kind === "crypto" && !(h.coinGeckoId || FINANCIAL_ASSETS_BY_ID[h.assetId ?? ""]?.coinGeckoId));
+      for (const h of unresolved) {
+        if (resolvedLiveRef.current.has(`cg:${h.id}`)) continue;
+        resolvedLiveRef.current.add(`cg:${h.id}`);
+        try {
+          const rows = await searchUniversalAssets(`${h.symbol} ${h.name}`.trim(), 8);
+          const hit = rows.find((r) => r.kind === "crypto" && r.coinGeckoId);
+          if (hit?.coinGeckoId) mappedIds.push(hit.coinGeckoId);
+        } catch {
+          // ignore
+        }
+      }
+      const ids = Array.from(new Set(mappedIds));
+      if (!ids.length) {
+        if (alive) {
+          setCryptoPrices({});
+          setCryptoDailyPct({});
+        }
+        return;
+      }
       try {
         const rows = await fetchCoinGeckoMarkets({
           ids,
@@ -119,15 +151,33 @@ export default function ToolsHomeScreen() {
 
   useEffect(() => {
     let alive = true;
-    const symbols = Array.from(new Set(holdings.filter((h) => h.kind !== "crypto").map((h) => h.symbol)));
-    if (!symbols.length) {
-      setEquityPrices({});
-      setEquityPreviousPrices({});
-      return;
-    }
     const poll = async () => {
+      const nonCrypto = holdings.filter((h) => h.kind !== "crypto");
+      let symbols = Array.from(new Set(nonCrypto.map((h) => (h.quoteSymbol || h.symbol).toUpperCase()).filter(Boolean)));
+      if (!symbols.length) {
+        if (alive) {
+          setEquityPrices({});
+          setEquityPreviousPrices({});
+        }
+        return;
+      }
       try {
-        const rows = await fetchYahooQuotes(symbols);
+        let rows = await fetchYahooQuotes(symbols);
+        const found = new Set(rows.map((row) => row.symbol.toUpperCase()));
+        const missing = nonCrypto.filter((h) => !found.has((h.quoteSymbol || h.symbol).toUpperCase()));
+        for (const h of missing) {
+          if (resolvedLiveRef.current.has(`yf:${h.id}`)) continue;
+          resolvedLiveRef.current.add(`yf:${h.id}`);
+          try {
+            const searchRows = await searchUniversalAssets(`${h.symbol} ${h.name}`.trim(), 10);
+            const hit = searchRows.find((r) => r.kind !== "crypto" && r.symbol);
+            if (hit?.symbol) symbols.push(hit.symbol.toUpperCase());
+          } catch {
+            // ignore
+          }
+        }
+        symbols = Array.from(new Set(symbols));
+        if (symbols.length !== found.size) rows = await fetchYahooQuotes(symbols);
         if (!alive) return;
         setEquityPrices(Object.fromEntries(rows.map((row) => [row.symbol.toUpperCase(), row.price])));
         setEquityPreviousPrices(
@@ -162,6 +212,40 @@ export default function ToolsHomeScreen() {
       UIManager.setLayoutAnimationEnabledExperimental(true);
     }
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const saved = await loadPersistedJson<{
+        selectedWidgets: PersonalWidgetId[];
+        widgetSizes: Partial<Record<PersonalWidgetId, PersonalWidgetSize>>;
+      }>("personal_widgets_layout", { selectedWidgets: DEFAULT_PERSONAL_WIDGETS, widgetSizes: {} });
+      if (!alive) return;
+      const allowed = new Set(PERSONAL_WIDGETS.map((w) => w.id));
+      const nextSelected = Array.isArray(saved.selectedWidgets)
+        ? saved.selectedWidgets.filter((id): id is PersonalWidgetId => allowed.has(id))
+        : DEFAULT_PERSONAL_WIDGETS;
+      setSelectedWidgets(nextSelected.length ? nextSelected : DEFAULT_PERSONAL_WIDGETS);
+      const nextSizes: Partial<Record<PersonalWidgetId, PersonalWidgetSize>> = {};
+      if (saved.widgetSizes && typeof saved.widgetSizes === "object") {
+        for (const [key, size] of Object.entries(saved.widgetSizes)) {
+          if (allowed.has(key as PersonalWidgetId) && (size === "sm" || size === "md" || size === "lg")) {
+            nextSizes[key as PersonalWidgetId] = size;
+          }
+        }
+      }
+      setWidgetSizes(nextSizes);
+      setLayoutHydrated(true);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!layoutHydrated) return;
+    void savePersistedJson("personal_widgets_layout", { selectedWidgets, widgetSizes });
+  }, [selectedWidgets, widgetSizes, layoutHydrated]);
 
   const dragOffsetFor = (id: PersonalWidgetId) => {
     const existing = dragOffsetsRef.current.get(id);
@@ -226,7 +310,7 @@ export default function ToolsHomeScreen() {
         const live =
           h.kind === "crypto"
             ? (h.coinGeckoId ? cryptoPrices[h.coinGeckoId] : undefined)
-            : equityPrices[h.symbol.toUpperCase()];
+            : equityPrices[(h.quoteSymbol || h.symbol).toUpperCase()];
         const px = Number.isFinite(live) ? Number(live) : Number.isFinite(h.manualPrice) ? Number(h.manualPrice) : h.avgCost;
         return sum + h.quantity * px;
       }, 0),
@@ -247,8 +331,8 @@ export default function ToolsHomeScreen() {
             : sourceRowPrice;
           return sum + h.quantity * prev;
         }
-        const prevPx = equityPreviousPrices[h.symbol.toUpperCase()];
-        const fallback = equityPrices[h.symbol.toUpperCase()] ?? h.manualPrice ?? h.avgCost;
+        const prevPx = equityPreviousPrices[(h.quoteSymbol || h.symbol).toUpperCase()];
+        const fallback = equityPrices[(h.quoteSymbol || h.symbol).toUpperCase()] ?? h.manualPrice ?? h.avgCost;
         const px = Number.isFinite(prevPx) ? prevPx : fallback;
         return sum + h.quantity * px;
       }, 0),
@@ -470,7 +554,7 @@ export default function ToolsHomeScreen() {
   };
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingBottom: 118 }} scrollEnabled={!draggingWidget}>
+    <ScrollView ref={scrollRef} style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingBottom: 118 }} scrollEnabled={!draggingWidget}>
       <TabHeader title={t("Personal Hub", "Persoenlicher Hub")} />
 
       <View style={{ paddingHorizontal: SCREEN_HORIZONTAL_PADDING }}>
@@ -520,9 +604,85 @@ export default function ToolsHomeScreen() {
         </View>
 
         <View style={[cardStyle, { marginBottom: 10 }]}>
-          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Widgets", "Widgets")}</Text>
-            <View style={{ flexDirection: "row", gap: 8 }}>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Widgets", "Widgets")}</Text>
+        </View>
+
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          {selectedWidgets.map((id) => (
+            <Animated.View
+              key={id}
+              style={[
+                cardStyle,
+                sizeStyle(widgetSize(id)),
+                widgetFloatingStyle(id),
+              ]}
+            >
+              {editingLayout && (
+                <>
+                  <View
+                    style={{
+                      position: "absolute",
+                      top: 6,
+                      left: 6,
+                      zIndex: 10,
+                      flexDirection: "row",
+                      gap: 6,
+                    }}
+                  >
+                    <Pressable
+                      onPress={() => moveWidget(id, -1)}
+                      style={{
+                        borderRadius: 999,
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        backgroundColor: colors.dark ? "#251D45" : "#EEE5FF",
+                        paddingHorizontal: 9,
+                        paddingVertical: 7,
+                      }}
+                    >
+                      <Text style={{ color: colors.text, fontSize: 11, fontWeight: "800" }}>{t("Up", "Hoch")}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => moveWidget(id, 1)}
+                      style={{
+                        borderRadius: 999,
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        backgroundColor: colors.dark ? "#251D45" : "#EEE5FF",
+                        paddingHorizontal: 9,
+                        paddingVertical: 7,
+                      }}
+                    >
+                      <Text style={{ color: colors.text, fontSize: 11, fontWeight: "800" }}>{t("Down", "Runter")}</Text>
+                    </Pressable>
+                  </View>
+                  <Pressable
+                    onPress={() => cycleWidgetSize(id)}
+                    style={{
+                      position: "absolute",
+                      top: 6,
+                      right: 6,
+                      zIndex: 10,
+                      borderRadius: 999,
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      backgroundColor: colors.dark ? "#251D45" : "#EEE5FF",
+                      paddingHorizontal: 7,
+                      paddingVertical: 3,
+                    }}
+                  >
+                    <Text style={{ color: colors.text, fontSize: 10, fontWeight: "800" }}>{widgetSize(id).toUpperCase()}</Text>
+                  </Pressable>
+                </>
+              )}
+              {renderWidget(id)}
+            </Animated.View>
+          ))}
+        </View>
+
+        <View style={[cardStyle, { marginTop: 10, marginBottom: 10 }]}>
+          <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
+            {showWidgetPicker && (
               <Pressable
                 onPress={() => {
                   setEditingLayout((v) => !v);
@@ -542,20 +702,30 @@ export default function ToolsHomeScreen() {
               >
                 <Text style={{ color: "#B79DFF", fontSize: 12, fontWeight: "700" }}>{editingLayout ? t("Done", "Fertig") : t("Drag", "Verschieben")}</Text>
               </Pressable>
-              <Pressable
-                onPress={() => setShowWidgetPicker((v) => !v)}
-                style={({ pressed }) => ({
-                  borderRadius: 999,
-                  borderWidth: 1,
-                  borderColor: "#5F43B2",
-                  backgroundColor: pressed ? (colors.dark ? "#201A3C" : "#E9E0FF") : (colors.dark ? "#17132A" : "#EEE8FF"),
-                  paddingHorizontal: 10,
-                  paddingVertical: 6,
-                })}
-              >
-                <Text style={{ color: "#B79DFF", fontSize: 12, fontWeight: "700" }}>{showWidgetPicker ? t("Close", "Schliessen") : t("Manage", "Verwalten")}</Text>
-              </Pressable>
-            </View>
+            )}
+            <Pressable
+              onPress={() =>
+                setShowWidgetPicker((v) => {
+                  const next = !v;
+                  if (!next) {
+                    setEditingLayout(false);
+                    setDraggingWidget(null);
+                    setDragHint(null);
+                  }
+                  return next;
+                })
+              }
+              style={({ pressed }) => ({
+                borderRadius: 999,
+                borderWidth: 1,
+                borderColor: "#5F43B2",
+                backgroundColor: pressed ? (colors.dark ? "#201A3C" : "#E9E0FF") : (colors.dark ? "#17132A" : "#EEE8FF"),
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+              })}
+            >
+              <Text style={{ color: "#B79DFF", fontSize: 12, fontWeight: "700" }}>{showWidgetPicker ? t("Close", "Schliessen") : t("Manage", "Verwalten")}</Text>
+            </Pressable>
           </View>
 
           {showWidgetPicker && (
@@ -654,79 +824,6 @@ export default function ToolsHomeScreen() {
               )}
             </View>
           )}
-        </View>
-
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-          {selectedWidgets.map((id) => (
-            <Animated.View
-              key={id}
-              style={[
-                cardStyle,
-                sizeStyle(widgetSize(id)),
-                widgetFloatingStyle(id),
-              ]}
-            >
-              {editingLayout && (
-                <>
-                  <View
-                    style={{
-                      position: "absolute",
-                      top: 6,
-                      left: 6,
-                      zIndex: 10,
-                      flexDirection: "row",
-                      gap: 6,
-                    }}
-                  >
-                    <Pressable
-                      onPress={() => moveWidget(id, -1)}
-                      style={{
-                        borderRadius: 999,
-                        borderWidth: 1,
-                        borderColor: colors.border,
-                        backgroundColor: colors.dark ? "#251D45" : "#EEE5FF",
-                        paddingHorizontal: 9,
-                        paddingVertical: 7,
-                      }}
-                    >
-                      <Text style={{ color: colors.text, fontSize: 11, fontWeight: "800" }}>{t("Up", "Hoch")}</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => moveWidget(id, 1)}
-                      style={{
-                        borderRadius: 999,
-                        borderWidth: 1,
-                        borderColor: colors.border,
-                        backgroundColor: colors.dark ? "#251D45" : "#EEE5FF",
-                        paddingHorizontal: 9,
-                        paddingVertical: 7,
-                      }}
-                    >
-                      <Text style={{ color: colors.text, fontSize: 11, fontWeight: "800" }}>{t("Down", "Runter")}</Text>
-                    </Pressable>
-                  </View>
-                  <Pressable
-                    onPress={() => cycleWidgetSize(id)}
-                    style={{
-                      position: "absolute",
-                      top: 6,
-                      right: 6,
-                      zIndex: 10,
-                      borderRadius: 999,
-                      borderWidth: 1,
-                      borderColor: colors.border,
-                      backgroundColor: colors.dark ? "#251D45" : "#EEE5FF",
-                      paddingHorizontal: 7,
-                      paddingVertical: 3,
-                    }}
-                  >
-                    <Text style={{ color: colors.text, fontSize: 10, fontWeight: "800" }}>{widgetSize(id).toUpperCase()}</Text>
-                  </Pressable>
-                </>
-              )}
-              {renderWidget(id)}
-            </Animated.View>
-          ))}
         </View>
       </View>
 

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { searchUniversalAssets, UniversalAsset } from "../../src/data/asset-search";
 import { FormInput } from "../../src/ui/form-input";
 import { ActionButton } from "../../src/ui/action-button";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -51,6 +52,10 @@ export default function StrategyScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchRows, setSearchRows] = useState<UniversalAsset[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  useLogoScrollToTop(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  });
   const [strategyAssets, setStrategyAssets] = useState<StrategyAsset[]>([
     { id: "preset_spy", symbol: "SPY", name: "S&P 500 ETF", kind: "etf", expectedReturnPct: 8, allocationPct: 50 },
     { id: "preset_qqq", symbol: "QQQ", name: "NASDAQ 100 ETF", kind: "etf", expectedReturnPct: 10, allocationPct: 20 },
@@ -166,6 +171,7 @@ export default function StrategyScreen() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={{ paddingBottom: 118 }}
       onScroll={(e) => setCompactHeader(e.nativeEvent.contentOffset.y > 120)}

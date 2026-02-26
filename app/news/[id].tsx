@@ -1,15 +1,27 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocalSearchParams } from "expo-router";
 import { Image, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 
+import { translateRuntimeText } from "../../src/i18n/runtime-translation";
 import { useNewsStore } from "../../src/state/news";
 import { useI18n } from "../../src/i18n/use-i18n";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
 function stripHtml(html: string): string {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function imageCanonicalKey(url: string): string {
+  const clean = String(url || "").trim();
+  if (!clean) return "";
+  try {
+    const parsed = new URL(clean);
+    return `${parsed.origin}${parsed.pathname}`.toLowerCase();
+  } catch {
+    return clean.toLowerCase();
+  }
 }
 
 export default function NewsDetailScreen() {
@@ -22,6 +34,56 @@ export default function NewsDetailScreen() {
 
   const article = getById(id);
   const body = useMemo(() => stripHtml(article?.contentHtml ?? article?.summary ?? ""), [article]);
+  const uniqueImages = useMemo(() => {
+    const list = article?.images ?? [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const url of list) {
+      const key = imageCanonicalKey(url);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(url);
+    }
+    return out;
+  }, [article]);
+  const [translatedTitle, setTranslatedTitle] = useState("");
+  const [translatedBody, setTranslatedBody] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    const title = article?.title ?? "";
+    const rawBody = body || article?.summary || "";
+    if (!title && !rawBody) {
+      setTranslatedTitle("");
+      setTranslatedBody("");
+      return () => {
+        active = false;
+      };
+    }
+
+    if (language === "en") {
+      setTranslatedTitle(title);
+      setTranslatedBody(rawBody);
+      return () => {
+        active = false;
+      };
+    }
+
+    const run = async () => {
+      const [nextTitle, nextBody] = await Promise.all([
+        translateRuntimeText(title, language, { sourceLanguage: "auto", chunkSize: 550 }),
+        translateRuntimeText(rawBody, language, { sourceLanguage: "auto", chunkSize: 800 }),
+      ]);
+      if (!active) return;
+      setTranslatedTitle(nextTitle || title);
+      setTranslatedBody(nextBody || rawBody);
+    };
+    void run();
+
+    return () => {
+      active = false;
+    };
+  }, [article, body, language]);
 
   if (!article) {
     return (
@@ -34,21 +96,25 @@ export default function NewsDetailScreen() {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ padding: 14, paddingTop: insets.top + 10, paddingBottom: 24 }}>
-      <Text style={{ color: colors.text, fontSize: 25, fontWeight: "900" }}>{article.title}</Text>
+      <Text style={{ color: colors.text, fontSize: 25, fontWeight: "900" }}>
+        {translatedTitle || article.title}
+      </Text>
       <Text style={{ color: colors.subtext, marginTop: 6 }}>
         {article.source} • {article.pubDate ? new Date(article.pubDate).toLocaleString(language) : t("latest", "aktuell")}
       </Text>
 
-      {!!article.images.length && (
+      {!!uniqueImages.length && (
         <View style={{ marginTop: 10, gap: 8 }}>
-          {article.images.map((url) => (
+          {uniqueImages.map((url) => (
             <Image key={url} source={{ uri: url }} style={{ width: "100%", height: 210, borderRadius: 12 }} resizeMode="cover" />
           ))}
         </View>
       )}
 
       <View style={{ marginTop: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12 }}>
-        <Text style={{ color: colors.text, lineHeight: 21 }}>{body || article.summary}</Text>
+        <Text style={{ color: colors.text, lineHeight: 21 }}>
+          {translatedBody || body || article.summary}
+        </Text>
       </View>
 
       <View style={{ marginTop: 10, height: 1100, borderRadius: 12, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>

@@ -2,17 +2,20 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { loadPersistedJson, savePersistedJson } from "../lib/persistence";
 import { defaultBucketForCategory, normalizeSpendingCategory } from "../catalog/spending-categories";
+import { TRACKED_COINS } from "../catalog/coins";
 
 export type PortfolioHolding = {
   id: string;
   assetId?: string;
   symbol: string;
+  quoteSymbol?: string;
   name: string;
   kind: "stock" | "etf" | "crypto";
   coinGeckoId?: string;
   exchange?: string;
   quantity: number;
   avgCost: number;
+  costCurrency?: "USD" | "EUR";
   manualPrice?: number;
   targetWeight?: number;
   annualYieldPct?: number;
@@ -50,6 +53,7 @@ export type PortfolioTransaction = {
   side: "buy" | "sell" | "dividend" | "deposit" | "withdrawal";
   quantity: number;
   price: number;
+  currency?: "USD" | "EUR";
   fee: number;
   date: string;
   note?: string;
@@ -85,12 +89,14 @@ type FinanceToolsContextValue = {
   addHolding: (input: {
     assetId?: string;
     symbol: string;
+    quoteSymbol?: string;
     name: string;
     kind: "stock" | "etf" | "crypto";
     coinGeckoId?: string;
     exchange?: string;
     quantity: number;
     avgCost: number;
+    costCurrency?: "USD" | "EUR";
     targetWeight?: number;
     annualYieldPct?: number;
     manualPrice?: number;
@@ -120,6 +126,7 @@ type FinanceToolsContextValue = {
     side: "buy" | "sell" | "dividend" | "deposit" | "withdrawal";
     quantity: number;
     price: number;
+    currency?: "USD" | "EUR";
     fee?: number;
     date?: string;
     note?: string;
@@ -128,6 +135,11 @@ type FinanceToolsContextValue = {
 };
 
 const FinanceToolsContext = createContext<FinanceToolsContextValue | null>(null);
+const TRACKED_COIN_ID_BY_SYMBOL = new Map<string, string>(TRACKED_COINS.map((coin) => [coin.symbol.toUpperCase(), coin.id]));
+
+function resolveKnownCoinId(symbol: string): string | undefined {
+  return TRACKED_COIN_ID_BY_SYMBOL.get(symbol.trim().toUpperCase());
+}
 
 let nextId = 1;
 function uid(prefix: string): string {
@@ -238,16 +250,19 @@ export function FinanceToolsProvider(props: { children: ReactNode }) {
           return;
         }
         const symbol = input.symbol.trim().toUpperCase();
+        const resolvedCoinId = input.kind === "crypto" ? (input.coinGeckoId || resolveKnownCoinId(symbol)) : undefined;
         const newHolding: PortfolioHolding = {
           id: uid("holding"),
           assetId: input.assetId,
           symbol,
+          quoteSymbol: input.quoteSymbol,
           name: input.name.trim(),
           kind: input.kind,
-          coinGeckoId: input.coinGeckoId,
+          coinGeckoId: resolvedCoinId,
           exchange: input.exchange,
           quantity: input.quantity,
           avgCost: input.avgCost,
+          costCurrency: input.costCurrency,
           manualPrice: Number.isFinite(input.manualPrice) ? input.manualPrice : input.kind === "crypto" ? undefined : input.avgCost,
           targetWeight: input.targetWeight,
           annualYieldPct: input.annualYieldPct,
@@ -264,12 +279,14 @@ export function FinanceToolsProvider(props: { children: ReactNode }) {
             row.id === existing.id
               ? {
                   ...row,
+                  quoteSymbol: input.quoteSymbol || row.quoteSymbol,
                   quantity: nextQty,
                   avgCost: weightedAvg,
+                  costCurrency: input.costCurrency || row.costCurrency,
                   targetWeight: Number.isFinite(input.targetWeight) ? input.targetWeight : row.targetWeight,
                   annualYieldPct: Number.isFinite(input.annualYieldPct) ? input.annualYieldPct : row.annualYieldPct,
                   manualPrice: Number.isFinite(input.manualPrice) ? input.manualPrice : row.manualPrice,
-                  coinGeckoId: input.coinGeckoId || row.coinGeckoId,
+                  coinGeckoId: resolvedCoinId || row.coinGeckoId,
                 }
               : row
           );
@@ -283,6 +300,7 @@ export function FinanceToolsProvider(props: { children: ReactNode }) {
             side: "buy",
             quantity: input.quantity,
             price: input.avgCost,
+            currency: input.costCurrency,
             fee: 0,
             date: new Date().toISOString().slice(0, 10),
             note: "Auto-created on holding add",
@@ -426,10 +444,13 @@ export function FinanceToolsProvider(props: { children: ReactNode }) {
               {
                 id: createdId,
                 symbol,
+                quoteSymbol: symbol,
                 name: symbol,
                 kind: input.kind,
+                coinGeckoId: input.kind === "crypto" ? resolveKnownCoinId(symbol) : undefined,
                 quantity: input.quantity,
                 avgCost: input.price,
+                costCurrency: input.currency,
                 manualPrice: input.kind === "crypto" ? undefined : input.price,
               },
             ];
@@ -458,6 +479,8 @@ export function FinanceToolsProvider(props: { children: ReactNode }) {
           }
           next[idx] = {
             ...current,
+            quoteSymbol: current.quoteSymbol || symbol,
+            coinGeckoId: current.kind === "crypto" ? (current.coinGeckoId || resolveKnownCoinId(symbol)) : current.coinGeckoId,
             quantity: nextQty,
             avgCost: nextAvg,
             manualPrice: current.kind === "crypto" ? current.manualPrice : current.manualPrice ?? input.price,
@@ -474,6 +497,7 @@ export function FinanceToolsProvider(props: { children: ReactNode }) {
             side: input.side,
             quantity: effectiveQty,
             price: input.price,
+            currency: input.currency,
             fee: Number.isFinite(input.fee) ? Number(input.fee) : 0,
             date: input.date ?? new Date().toISOString().slice(0, 10),
             note: input.note?.trim() || "",

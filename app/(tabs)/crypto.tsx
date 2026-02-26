@@ -1,16 +1,18 @@
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, FlatList, Image, Pressable, Text, TextInput, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Alert, FlatList, Image, Pressable, RefreshControl, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { TRACKED_COINS, TRACKED_COINS_BY_ID } from "../../src/catalog/coins";
 import { searchUniversalAssets, UniversalAsset } from "../../src/data/asset-search";
-import { CoinMarket, fetchCoinGeckoMarkets, fetchCoinGeckoTopMarkets } from "../../src/data/coingecko";
+import { CoinMarket, fetchCoinGeckoMarkets, fetchCoinGeckoSimplePrices, fetchCoinGeckoTopMarkets } from "../../src/data/coingecko";
 import { useI18n } from "../../src/i18n/use-i18n";
 import { usePriceAlerts } from "../../src/state/price-alerts";
 import { useSettings } from "../../src/state/settings";
 import { useWatchlist } from "../../src/state/watchlist";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
+import { RefreshFeedback, refreshControlProps } from "../../src/ui/refresh-feedback";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -53,7 +55,6 @@ export default function CryptoScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
-  const [nextRefreshIn, setNextRefreshIn] = useState(0);
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("rank");
   const [sortDesc, setSortDesc] = useState(false);
@@ -61,6 +62,71 @@ export default function CryptoScreen() {
   const [rowDensity, setRowDensity] = useState<RowDensity>("compact");
   const [compactHeader, setCompactHeader] = useState(false);
   const [remoteSearchRows, setRemoteSearchRows] = useState<UniversalAsset[]>([]);
+  const listRef = useRef<FlatList<CoinMarket>>(null);
+  const pollCounterRef = useRef(0);
+  const marketIdsKey = useMemo(
+    () => marketRows.map((row) => row.id).sort().join("|"),
+    [marketRows]
+  );
+  const marketIdSet = useMemo(
+    () => new Set(marketIdsKey ? marketIdsKey.split("|") : []),
+    [marketIdsKey]
+  );
+  const marketIds = useMemo(
+    () => (marketIdsKey ? marketIdsKey.split("|").filter(Boolean) : []),
+    [marketIdsKey]
+  );
+  useLogoScrollToTop(() => {
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
+  });
+
+  const refreshLivePrices = useCallback(async (): Promise<boolean> => {
+    const ids = marketIds.slice(0, 220);
+    if (!ids.length) return false;
+    try {
+      const quotes = await fetchCoinGeckoSimplePrices({
+        ids,
+        vsCurrency: settings.currency.toLowerCase() as "usd" | "eur",
+        useCache: true,
+        cacheTtlMs: 8_000,
+      });
+      if (!Object.keys(quotes).length) return false;
+      const nowIso = new Date().toISOString();
+      let changed = false;
+      setMarketRows((prev) =>
+        prev.map((row) => {
+          const q = quotes[row.id];
+          if (!q) return row;
+          const nextPrice = Number.isFinite(q.current_price) ? Number(q.current_price) : row.current_price;
+          const nextMcap = Number.isFinite(q.market_cap) ? Number(q.market_cap) : row.market_cap;
+          const nextVol = Number.isFinite(q.total_volume) ? Number(q.total_volume) : row.total_volume;
+          const nextChg = Number.isFinite(q.price_change_percentage_24h)
+            ? Number(q.price_change_percentage_24h)
+            : row.price_change_percentage_24h;
+          const hasDiff =
+            nextPrice !== row.current_price ||
+            nextMcap !== row.market_cap ||
+            nextVol !== row.total_volume ||
+            nextChg !== row.price_change_percentage_24h;
+          if (!hasDiff) return row;
+          changed = true;
+          return {
+            ...row,
+            current_price: nextPrice,
+            market_cap: nextMcap,
+            total_volume: nextVol,
+            price_change_percentage_24h: nextChg,
+            last_updated: nowIso,
+          };
+        })
+      );
+      if (changed) setLastUpdatedAt(Date.now());
+      setError(null);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [marketIds, settings.currency]);
 
   const load = useCallback(
     async (isManualRefresh = false): Promise<boolean> => {
@@ -72,23 +138,47 @@ export default function CryptoScreen() {
           vsCurrency: settings.currency.toLowerCase() as "usd" | "eur",
           page: 1,
           perPage: 200,
+          // Stale-while-revalidate strategy to avoid blank board and reduce provider throttling.
           useCache: !isManualRefresh,
-          cacheTtlMs: 120_000,
+          cacheTtlMs: 15_000,
         });
 
         if (rows.length > 0) {
           setMarketRows(rows);
+          setLastUpdatedAt(Date.now());
+          setError(null);
+          return true;
         }
-        setLastUpdatedAt(Date.now());
-        setError(null);
-        return true;
+
+        // Top 200 endpoint can return empty during provider throttling.
+        // Immediately fail over to a smaller tracked set so the screen never sits blank.
+        const fallback = await fetchCoinGeckoMarkets({
+          ids: TRACKED_COINS.slice(0, 40).map((c) => c.id),
+          vsCurrency: settings.currency.toLowerCase() as "usd" | "eur",
+          useCache: !isManualRefresh,
+          cacheTtlMs: 15_000,
+        });
+        if (fallback.length > 0) {
+          setMarketRows((prev) => {
+            if (!prev.length) return fallback;
+            const byId = new Map(prev.map((row) => [row.id, row]));
+            for (const row of fallback) byId.set(row.id, row);
+            return [...byId.values()];
+          });
+          setLastUpdatedAt(Date.now());
+          setError(t("Live feed delayed by provider rate limits. Showing fallback market set.", "Live-Feed verzoegert durch Rate-Limits. Fallback-Marktdaten werden angezeigt."));
+          return true;
+        }
+
+        setError(t("Could not update prices. CoinGecko may be rate limiting right now.", "Preise konnten nicht aktualisiert werden. CoinGecko limitiert eventuell aktuell."));
+        return marketRows.length > 0;
       } catch {
         try {
           const fallback = await fetchCoinGeckoMarkets({
-            ids: TRACKED_COINS.slice(0, 60).map((c) => c.id),
+            ids: TRACKED_COINS.slice(0, 40).map((c) => c.id),
             vsCurrency: settings.currency.toLowerCase() as "usd" | "eur",
-            useCache: true,
-            cacheTtlMs: 180_000,
+            useCache: !isManualRefresh,
+            cacheTtlMs: 15_000,
           });
           if (fallback.length > 0) {
             setMarketRows((prev) => {
@@ -97,11 +187,11 @@ export default function CryptoScreen() {
               for (const row of fallback) byId.set(row.id, row);
               return [...byId.values()];
             });
+            setLastUpdatedAt(Date.now());
             setError(t("Live feed delayed by provider rate limits. Showing fallback market set.", "Live-Feed verzoegert durch Rate-Limits. Fallback-Marktdaten werden angezeigt."));
             return true;
           }
-        } catch {
-        }
+        } catch {}
         setError(t("Could not update prices. CoinGecko may be rate limiting right now.", "Preise konnten nicht aktualisiert werden. CoinGecko limitiert eventuell aktuell."));
         return marketRows.length > 0;
       } finally {
@@ -139,7 +229,7 @@ export default function CryptoScreen() {
     const missingIds = remoteSearchRows
       .map((r) => r.coinGeckoId)
       .filter((id): id is string => Boolean(id))
-      .filter((id) => !marketRows.some((row) => row.id === id))
+      .filter((id) => !marketIdSet.has(id))
       .slice(0, 20);
     if (!missingIds.length) return;
     let alive = true;
@@ -163,21 +253,22 @@ export default function CryptoScreen() {
     return () => {
       alive = false;
     };
-  }, [remoteSearchRows, settings.currency, marketRows]);
+  }, [remoteSearchRows, settings.currency, marketIdSet]);
 
   useEffect(() => {
     let alive = true;
     let inFlight = false;
     let backoffMs = 0;
-    let countdownTimer: ReturnType<typeof setInterval> | null = null;
 
     async function tick() {
       if (!alive || inFlight) return;
       inFlight = true;
       try {
-        const ok = await load(false);
+        pollCounterRef.current += 1;
+        const shouldRunFull = marketRows.length === 0 || pollCounterRef.current % 6 === 0;
+        const ok = shouldRunFull ? await load(false) : await refreshLivePrices();
         if (ok) backoffMs = 0;
-        else backoffMs = Math.min(backoffMs ? backoffMs * 2 : 5000, 30000);
+        else backoffMs = Math.min(backoffMs ? backoffMs * 2 : 5000, 15000);
       } finally {
         inFlight = false;
       }
@@ -186,30 +277,18 @@ export default function CryptoScreen() {
     void tick();
 
     if (!settings.autoRefresh) {
-      setNextRefreshIn(0);
       return () => {
         alive = false;
-        if (countdownTimer) clearInterval(countdownTimer);
       };
     }
 
-    const baseDelayMs = Math.max(30, settings.refreshSeconds) * 1000;
+    const baseDelayMs = Math.max(5, settings.refreshSeconds) * 1000;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const schedule = () => {
       if (!alive) return;
       const currentDelay = Math.max(baseDelayMs, backoffMs || baseDelayMs);
-      setNextRefreshIn(Math.floor(currentDelay / 1000));
-
-      countdownTimer = setInterval(() => {
-        setNextRefreshIn((v) => (v > 0 ? v - 1 : 0));
-      }, 1000);
-
       timer = setTimeout(async () => {
-        if (countdownTimer) {
-          clearInterval(countdownTimer);
-          countdownTimer = null;
-        }
         await tick();
         schedule();
       }, currentDelay);
@@ -220,9 +299,8 @@ export default function CryptoScreen() {
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
-      if (countdownTimer) clearInterval(countdownTimer);
     };
-  }, [load, settings.autoRefresh, settings.refreshSeconds]);
+  }, [load, marketRows.length, refreshLivePrices, settings.autoRefresh, settings.refreshSeconds]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -272,6 +350,7 @@ export default function CryptoScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <RefreshFeedback refreshing={refreshing} colors={colors} label={t("Refreshing market feed...", "Marktdaten werden aktualisiert...")} />
       {compactHeader && (
         <View
           style={{
@@ -296,13 +375,13 @@ export default function CryptoScreen() {
             <Text style={{ color: colors.subtext, fontSize: 11, marginTop: 1 }}>{filtered.length} {t("assets", "Assets")} • {gainersCount} {t("gainers", "Gewinner")}</Text>
           </View>
           <View style={{ alignItems: "flex-end" }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>{settings.autoRefresh ? `${nextRefreshIn}s` : t("manual", "manuell")}</Text>
             <Text style={{ color: colors.subtext, fontSize: 11 }}>{formatMoney(totalMarketCap, settings.currency, true, settings.language)}</Text>
           </View>
         </View>
       )}
 
       <FlatList
+        ref={listRef}
         data={filtered}
         keyExtractor={(item) => item.id}
         onScroll={(e) => {
@@ -310,16 +389,32 @@ export default function CryptoScreen() {
           setCompactHeader(y > 210);
         }}
         scrollEventThrottle={16}
-        refreshing={refreshing}
-        onRefresh={() => {
-          void load(true);
-        }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              void (async () => {
+                setRefreshing(true);
+                try {
+                  // Manual refresh should always force at least one full fetch for fresh ranks + prices.
+                  const [liveOk] = await Promise.all([refreshLivePrices(), load(true)]);
+                  if (!liveOk) {
+                    // load(true) already ran; keep this branch for clarity.
+                  }
+                } finally {
+                  setRefreshing(false);
+                }
+              })();
+            }}
+            {...refreshControlProps(colors, "Refreshing crypto market...")}
+          />
+        }
         contentContainerStyle={{ paddingBottom: 118 }}
         ListHeaderComponent={
           <View>
             <TabHeader
               title={t("Crypto", "Krypto")}
-              subtitle={settings.autoRefresh ? `${t("Auto refresh in", "Auto-Aktualisierung in")} ${nextRefreshIn}s` : t("Manual refresh", "Manuelle Aktualisierung")}
+              subtitle={t("Live updates in background", "Live-Updates im Hintergrund")}
             />
 
             <View style={{ paddingHorizontal: SCREEN_HORIZONTAL_PADDING }}>

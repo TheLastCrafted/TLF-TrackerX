@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -9,6 +9,7 @@ import { getResearchMaterials, type ResearchTopic } from "../../src/data/researc
 import { useResearchNotes } from "../../src/state/research-notes";
 import { ActionButton } from "../../src/ui/action-button";
 import { HapticPressable as Pressable } from "../../src/ui/haptic-pressable";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -48,7 +49,11 @@ export default function ResearchScreen() {
   const [volatility, setVolatility] = useState<number | null>(null);
   const [betaProxy, setBetaProxy] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
-  const [showAssetConsole, setShowAssetConsole] = useState(true);
+  const [showAssetConsole, setShowAssetConsole] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  useLogoScrollToTop(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  });
 
   useEffect(() => {
     const q = query.trim();
@@ -219,7 +224,7 @@ export default function ResearchScreen() {
   };
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingBottom: 118 }}>
+    <ScrollView ref={scrollRef} style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingBottom: 118 }}>
       <View style={{ paddingTop: insets.top + 8 }}>
         <TabHeader title="Research" subtitle="Fundamentals, tokenomics, risk metrics, and thesis notes for each asset." />
       </View>
@@ -228,19 +233,11 @@ export default function ResearchScreen() {
         <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
             <Text style={{ color: colors.text, fontWeight: "800" }}>Asset Research Console</Text>
-            <Pressable
+            <ActionButton
+              label={showAssetConsole ? "Collapse" : "Expand"}
               onPress={() => setShowAssetConsole((v) => !v)}
-              style={({ pressed }) => ({
-                borderRadius: 999,
-                borderWidth: 1,
-                borderColor: "#5F43B2",
-                backgroundColor: pressed ? (colors.dark ? "#201A3C" : "#E9E0FF") : (colors.dark ? "#17132A" : "#EEE8FF"),
-                paddingHorizontal: 10,
-                paddingVertical: 6,
-              })}
-            >
-              <Text style={{ color: "#B79DFF", fontWeight: "700", fontSize: 12 }}>{showAssetConsole ? "Collapse" : "Expand"}</Text>
-            </Pressable>
+              style={{ minWidth: 104, minHeight: 36, paddingHorizontal: 10 }}
+            />
           </View>
           {showAssetConsole && (
             <>
@@ -284,23 +281,13 @@ export default function ResearchScreen() {
             <Text style={{ color: colors.subtext }}>Supply schedule: emission profile, unlock calendar, dilution or buyback pressure</Text>
             <Text style={{ color: colors.subtext }}>Risk metrics: volatility {volatility ? `${volatility.toFixed(2)}%` : "-"} • correlation {betaProxy?.toFixed(2) ?? "-"}</Text>
             {loading && <Text style={{ color: colors.subtext }}>Updating risk metrics...</Text>}
-            <Pressable
+            <ActionButton
+              label="Generate research summary"
               onPress={() => {
                 void generateSummary();
               }}
-              style={({ pressed }) => ({
-                marginTop: 4,
-                borderRadius: 10,
-                borderWidth: 1,
-                borderColor: colors.border,
-                backgroundColor: pressed ? (colors.dark ? "#151B28" : "#EAF0FF") : colors.surface,
-                paddingHorizontal: 10,
-                paddingVertical: 8,
-                alignSelf: "flex-start",
-              })}
-            >
-              <Text style={{ color: colors.text, fontWeight: "700" }}>Generate research summary</Text>
-            </Pressable>
+              style={{ marginTop: 4, alignSelf: "flex-start" }}
+            />
             {!!summary && <Text style={{ color: colors.subtext, marginTop: 6 }}>{summary}</Text>}
           </View>
         )}

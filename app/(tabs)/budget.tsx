@@ -1,11 +1,13 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SPENDING_CATEGORIES, SpendingBucket, defaultBucketForCategory } from "../../src/catalog/spending-categories";
+import { useI18n } from "../../src/i18n/use-i18n";
 import { useFinanceTools } from "../../src/state/finance-tools";
 import { FormInput } from "../../src/ui/form-input";
 import { ActionButton } from "../../src/ui/action-button";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -23,12 +25,17 @@ export default function BudgetScreen() {
   const insets = useSafeAreaInsets();
   const { budgets, expenses, addBudget, updateBudget, removeBudget, addExpense, updateExpense, removeExpense } = useFinanceTools();
   const colors = useAppColors();
+  const { t, tx } = useI18n();
 
   const [compactHeader, setCompactHeader] = useState(false);
   const [showBudgetForm, setShowBudgetForm] = useState(false);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [showBudgetLogs, setShowBudgetLogs] = useState(false);
   const [showExpenseLogs, setShowExpenseLogs] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  useLogoScrollToTop(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  });
 
   const [budgetCategory, setBudgetCategory] = useState(SPENDING_CATEGORIES[0]?.name ?? "Housing");
   const [budgetPlanned, setBudgetPlanned] = useState("2000");
@@ -65,6 +72,7 @@ export default function BudgetScreen() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={{ paddingBottom: 118 }}
       onScroll={(e) => setCompactHeader(e.nativeEvent.contentOffset.y > 120)}
@@ -89,34 +97,40 @@ export default function BudgetScreen() {
             alignItems: "center",
           }}
         >
-          <Text style={{ color: colors.text, fontWeight: "800" }}>Budget</Text>
-          <Text style={{ color: colors.subtext, fontSize: 12 }}>{expenses.length} expenses</Text>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{tx("Budget")}</Text>
+          <Text style={{ color: colors.subtext, fontSize: 12 }}>{expenses.length} {t("expenses", "Ausgaben")}</Text>
         </View>
       )}
 
-      <TabHeader title="Budget" subtitle="Manual budget and expense tracking with detailed category/subcategory insight." />
+      <TabHeader
+        title={tx("Budget")}
+        subtitle={t(
+          "Manual budget and expense tracking with detailed category/subcategory insight.",
+          "Manuelles Budget- und Ausgabentracking mit detaillierten Kategorie-/Unterkategorie-Insights."
+        )}
+      />
 
       <View style={{ paddingHorizontal: SCREEN_HORIZONTAL_PADDING }}>
         <View style={{ marginBottom: 10, flexDirection: "row", gap: 10 }}>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Total Planned</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Total Planned", "Gesamt geplant")}</Text>
             <Text style={{ color: colors.text, marginTop: 4, fontWeight: "900" }}>{toMoney(totalPlanned)}</Text>
           </View>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Total Spent</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Total Spent", "Gesamt ausgegeben")}</Text>
             <Text style={{ color: totalSpent <= totalPlanned ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "900" }}>{toMoney(totalSpent)}</Text>
           </View>
         </View>
 
         <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 8 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ color: colors.text, fontWeight: "800" }}>Add Budget Category</Text>
-            <ActionButton label={showBudgetForm ? "Close" : "Add Budget"} onPress={() => setShowBudgetForm((v) => !v)}/>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Add Budget Category", "Budgetkategorie hinzufuegen")}</Text>
+            <ActionButton label={showBudgetForm ? t("Close", "Schliessen") : t("Add Budget", "Budget hinzufuegen")} onPress={() => setShowBudgetForm((v) => !v)}/>
           </View>
           {!showBudgetForm && null}
           {showBudgetForm && (
             <>
-          <Text style={{ color: colors.subtext, fontSize: 12 }}>Budget Category</Text>
+          <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Budget Category", "Budgetkategorie")}</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {SPENDING_CATEGORIES.map((cat) => {
               const active = budgetCategory === cat.name;
@@ -139,11 +153,11 @@ export default function BudgetScreen() {
             })}
           </View>
           <View style={{ flexDirection: "row", gap: 8 }}>
-            <FormInput value={budgetPlanned} onChangeText={setBudgetPlanned} keyboardType="decimal-pad" label="Planned Amount" placeholder="e.g. 2000" help="Budget cap for this category." style={{ flex: 1 }} />
-            <FormInput value={budgetSpent} onChangeText={setBudgetSpent} keyboardType="decimal-pad" label="Already Spent" placeholder="e.g. 1200" help="Optional starting spent value." style={{ flex: 1 }} />
+            <FormInput value={budgetPlanned} onChangeText={setBudgetPlanned} keyboardType="decimal-pad" label={t("Planned Amount", "Geplanter Betrag")} placeholder={t("e.g. 2000", "z.B. 2000")} help={t("Budget cap for this category.", "Budgetobergrenze fuer diese Kategorie.")} style={{ flex: 1 }} />
+            <FormInput value={budgetSpent} onChangeText={setBudgetSpent} keyboardType="decimal-pad" label={t("Already Spent", "Bereits ausgegeben")} placeholder={t("e.g. 1200", "z.B. 1200")} help={t("Optional starting spent value.", "Optionaler Startwert fuer ausgegeben.")} style={{ flex: 1 }} />
           </View>
           <ActionButton
-            label="Add Budget"
+            label={t("Add Budget", "Budget hinzufuegen")}
             onPress={() => addBudget({ category: budgetCategory, planned: Number(budgetPlanned), spent: Number(budgetSpent) })}
             style={{ alignSelf: "flex-start" }}
           />
@@ -153,13 +167,13 @@ export default function BudgetScreen() {
 
         <View style={{ marginTop: 10, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 8 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ color: colors.text, fontWeight: "800" }}>Log Expense</Text>
-            <ActionButton label={showExpenseForm ? "Close" : "Add Expense"} onPress={() => setShowExpenseForm((v) => !v)}/>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Log Expense", "Ausgabe erfassen")}</Text>
+            <ActionButton label={showExpenseForm ? t("Close", "Schliessen") : t("Add Expense", "Ausgabe hinzufuegen")} onPress={() => setShowExpenseForm((v) => !v)}/>
           </View>
           {!showExpenseForm && null}
           {showExpenseForm && (
             <>
-          <Text style={{ color: colors.subtext, fontSize: 12 }}>Expense Category</Text>
+          <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Expense Category", "Ausgabenkategorie")}</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {SPENDING_CATEGORIES.map((cat) => {
               const active = expenseCategory === cat.name;
@@ -186,7 +200,7 @@ export default function BudgetScreen() {
             })}
           </View>
 
-          <Text style={{ color: colors.subtext, fontSize: 12 }}>Expense Subcategory</Text>
+          <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Expense Subcategory", "Ausgabe-Unterkategorie")}</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {(selectedExpenseCategory?.subcategories ?? ["General"]).map((sub) => {
               const active = expenseSubcategory === sub;
@@ -231,13 +245,13 @@ export default function BudgetScreen() {
             })}
           </View>
           <View style={{ flexDirection: "row", gap: 8 }}>
-            <FormInput value={expenseAmount} onChangeText={setExpenseAmount} keyboardType="decimal-pad" label="Expense Amount" placeholder="e.g. 45" help="Transaction amount." style={{ flex: 1 }} />
-            <FormInput value={expenseDate} onChangeText={setExpenseDate} label="Expense Date" placeholder="YYYY-MM-DD" help="Date format for trend tracking." style={{ flex: 1 }} />
+            <FormInput value={expenseAmount} onChangeText={setExpenseAmount} keyboardType="decimal-pad" label={t("Expense Amount", "Ausgabebetrag")} placeholder={t("e.g. 45", "z.B. 45")} help={t("Transaction amount.", "Transaktionsbetrag.")} style={{ flex: 1 }} />
+            <FormInput value={expenseDate} onChangeText={setExpenseDate} label={t("Expense Date", "Ausgabedatum")} placeholder="YYYY-MM-DD" help={t("Date format for trend tracking.", "Datumsformat fuer Trend-Tracking.")} style={{ flex: 1 }} />
           </View>
-          <FormInput value={expenseNote} onChangeText={setExpenseNote} label="Note (Optional)" placeholder="Description/context" help="Add short context for the expense." />
+          <FormInput value={expenseNote} onChangeText={setExpenseNote} label={t("Note (Optional)", "Notiz (optional)")} placeholder={t("Description/context", "Beschreibung/Kontext")} help={t("Add short context for the expense.", "Kurzen Kontext zur Ausgabe hinzufuegen.")} />
 
           <ActionButton
-            label="Add Expense"
+            label={t("Add Expense", "Ausgabe hinzufuegen")}
             onPress={() => addExpense({ category: expenseCategory, subcategory: expenseSubcategory, amount: Number(expenseAmount), date: expenseDate, note: expenseNote, bucket: expenseBucket })}
             style={{ alignSelf: "flex-start" }}
           />
@@ -247,45 +261,47 @@ export default function BudgetScreen() {
 
         <View style={{ marginTop: 10, flexDirection: "row", gap: 10 }}>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Total Planned</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Total Planned", "Gesamt geplant")}</Text>
             <Text style={{ color: colors.text, marginTop: 4, fontWeight: "900" }}>{toMoney(totalPlanned)}</Text>
           </View>
           <View style={{ flex: 1, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Total Spent</Text>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Total Spent", "Gesamt ausgegeben")}</Text>
             <Text style={{ color: totalSpent <= totalPlanned ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "900" }}>{toMoney(totalSpent)}</Text>
           </View>
         </View>
 
         <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-          <Text style={{ color: colors.text, fontWeight: "800" }}>Bucket Mix</Text>
-          <Text style={{ color: colors.subtext, marginTop: 4 }}>Need {toMoney(bucketTotals.need)} • Want {toMoney(bucketTotals.want)} • Saving {toMoney(bucketTotals.saving)}</Text>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Bucket Mix", "Bucket-Mix")}</Text>
+          <Text style={{ color: colors.subtext, marginTop: 4 }}>
+            {t("Need", "Need")} {toMoney(bucketTotals.need)} • {t("Want", "Want")} {toMoney(bucketTotals.want)} • {t("Saving", "Sparen")} {toMoney(bucketTotals.saving)}
+          </Text>
         </View>
 
         <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-          <Text style={{ color: colors.text, fontWeight: "800" }}>Top Categories</Text>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Top Categories", "Top-Kategorien")}</Text>
           <View style={{ marginTop: 6, gap: 3 }}>
             {byCategory.slice(0, 8).map((row) => (
               <Text key={row.category} style={{ color: colors.subtext }}>{row.category}: {toMoney(row.amount)}</Text>
             ))}
-            {!byCategory.length && <Text style={{ color: "#8E99BA" }}>No data yet.</Text>}
+            {!byCategory.length && <Text style={{ color: "#8E99BA" }}>{t("No data yet.", "Noch keine Daten vorhanden.")}</Text>}
           </View>
         </View>
 
         <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
-          <Text style={{ color: colors.text, fontWeight: "800" }}>Top Subcategories</Text>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Top Subcategories", "Top-Unterkategorien")}</Text>
           <View style={{ marginTop: 6, gap: 3 }}>
             {bySubcategory.slice(0, 10).map((row) => (
               <Text key={row.label} style={{ color: colors.subtext }}>{row.label}: {toMoney(row.amount)}</Text>
             ))}
-            {!bySubcategory.length && <Text style={{ color: "#8E99BA" }}>No data yet.</Text>}
+            {!bySubcategory.length && <Text style={{ color: "#8E99BA" }}>{t("No data yet.", "Noch keine Daten vorhanden.")}</Text>}
           </View>
         </View>
 
         <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ color: colors.text, fontWeight: "800" }}>Logged Budget Categories</Text>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Logged Budget Categories", "Erfasste Budgetkategorien")}</Text>
             <ActionButton
-              label={showBudgetLogs ? "Collapse" : "Expand"}
+              label={showBudgetLogs ? t("Collapse", "Einklappen") : t("Expand", "Ausklappen")}
               onPress={() => setShowBudgetLogs((v) => !v)}
               style={{ minWidth: 100, minHeight: 38, paddingHorizontal: 10 }}
             />
@@ -299,26 +315,26 @@ export default function BudgetScreen() {
                   <View key={`${budget.id}_${index}`} style={{ borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                       <Text style={{ color: "#F1F4FF", fontWeight: "800" }}>{budget.category}</Text>
-                      <ActionButton label="Remove" onPress={() => removeBudget(budget.id)} style={{ minWidth: 96 }} />
+                      <ActionButton label={t("Remove", "Entfernen")} onPress={() => removeBudget(budget.id)} style={{ minWidth: 96 }} />
                     </View>
-                    <Text style={{ color: "#A4B1D4", marginTop: 4 }}>Planned {toMoney(budget.planned)} • Spent {toMoney(budget.spent)}</Text>
-                    <Text style={{ color: remaining >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "700" }}>Remaining {toMoney(remaining)} • {pct(used)} used</Text>
-                    <TextInput value={String(budget.spent)} onChangeText={(v) => updateBudget(budget.id, { spent: Number(v) || 0 })} keyboardType="decimal-pad" placeholder="Update spent" placeholderTextColor={colors.subtext} style={{ marginTop: 6, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, color: colors.text, paddingHorizontal: 10, paddingVertical: 7 }} />
+                    <Text style={{ color: "#A4B1D4", marginTop: 4 }}>{t("Planned", "Geplant")} {toMoney(budget.planned)} • {t("Spent", "Ausgegeben")} {toMoney(budget.spent)}</Text>
+                    <Text style={{ color: remaining >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "700" }}>{t("Remaining", "Verbleibend")} {toMoney(remaining)} • {pct(used)} {t("used", "verbraucht")}</Text>
+                    <TextInput value={String(budget.spent)} onChangeText={(v) => updateBudget(budget.id, { spent: Number(v) || 0 })} keyboardType="decimal-pad" placeholder={t("Update spent", "Ausgegeben aktualisieren")} placeholderTextColor={colors.subtext} style={{ marginTop: 6, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, color: colors.text, paddingHorizontal: 10, paddingVertical: 7 }} />
                   </View>
                 );
               })}
-              {!budgets.length && <Text style={{ color: colors.subtext }}>No budget entries yet.</Text>}
+              {!budgets.length && <Text style={{ color: colors.subtext }}>{t("No budget entries yet.", "Noch keine Budgeteintraege vorhanden.")}</Text>}
             </View>
           ) : (
-            <Text style={{ color: colors.subtext, marginTop: 8, fontSize: 12 }}>Budget entries collapsed.</Text>
+            <Text style={{ color: colors.subtext, marginTop: 8, fontSize: 12 }}>{t("Budget entries collapsed.", "Budgeteintraege eingeklappt.")}</Text>
           )}
         </View>
 
         <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ color: colors.text, fontWeight: "800" }}>Logged Expenses</Text>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>{t("Logged Expenses", "Erfasste Ausgaben")}</Text>
             <ActionButton
-              label={showExpenseLogs ? "Collapse" : "Expand"}
+              label={showExpenseLogs ? t("Collapse", "Einklappen") : t("Expand", "Ausklappen")}
               onPress={() => setShowExpenseLogs((v) => !v)}
               style={{ minWidth: 100, minHeight: 38, paddingHorizontal: 10 }}
             />
@@ -329,17 +345,17 @@ export default function BudgetScreen() {
                 <View key={row.id} style={{ borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10 }}>
                   <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                     <Text style={{ color: "#F1F4FF", fontWeight: "800" }}>{row.category} • {row.subcategory}</Text>
-                    <ActionButton label="Remove" onPress={() => removeExpense(row.id)} style={{ minWidth: 96 }} />
+                    <ActionButton label={t("Remove", "Entfernen")} onPress={() => removeExpense(row.id)} style={{ minWidth: 96 }} />
                   </View>
                   <Text style={{ color: "#A4B1D4", marginTop: 4 }}>{row.date} • {row.bucket.toUpperCase()} • {toMoney(row.amount)}</Text>
                   {!!row.note && <Text style={{ color: "#8E99BA", marginTop: 4 }}>{row.note}</Text>}
-                  <TextInput value={String(row.amount)} onChangeText={(v) => updateExpense(row.id, { amount: Number(v) || 0 })} keyboardType="decimal-pad" placeholder="Update amount" placeholderTextColor={colors.subtext} style={{ marginTop: 6, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, color: colors.text, paddingHorizontal: 10, paddingVertical: 7 }} />
+                  <TextInput value={String(row.amount)} onChangeText={(v) => updateExpense(row.id, { amount: Number(v) || 0 })} keyboardType="decimal-pad" placeholder={t("Update amount", "Betrag aktualisieren")} placeholderTextColor={colors.subtext} style={{ marginTop: 6, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, color: colors.text, paddingHorizontal: 10, paddingVertical: 7 }} />
                 </View>
               ))}
-              {!expenses.length && <Text style={{ color: colors.subtext }}>No expense entries yet.</Text>}
+              {!expenses.length && <Text style={{ color: colors.subtext }}>{t("No expense entries yet.", "Noch keine Ausgaben erfasst.")}</Text>}
             </View>
           ) : (
-            <Text style={{ color: colors.subtext, marginTop: 8, fontSize: 12 }}>Expense entries collapsed.</Text>
+            <Text style={{ color: colors.subtext, marginTop: 8, fontSize: 12 }}>{t("Expense entries collapsed.", "Ausgaben eingeklappt.")}</Text>
           )}
         </View>
       </View>

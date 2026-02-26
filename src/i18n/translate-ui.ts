@@ -2,6 +2,7 @@ const EN_TO_DE: Record<string, string> = {
   Home: "Start",
   Charts: "Charts",
   Crypto: "Krypto",
+  Stocks: "Aktien",
   Macro: "Makro",
   Watchlist: "Watchlist",
   Settings: "Einstellungen",
@@ -18,6 +19,7 @@ const EN_TO_DE: Record<string, string> = {
   Refresh: "Aktualisieren",
   Remove: "Entfernen",
   "Saved Charts": "Gespeicherte Charts",
+  "Saved Stocks & ETFs": "Gespeicherte Aktien & ETFs",
   "Open first saved coin chart": "Ersten gespeicherten Coin-Chart oeffnen",
   "Interactive Chart Library": "Interaktive Chart-Bibliothek",
   "Browse chart clusters with a cleaner control panel.": "Durchsuche Chart-Cluster mit einem aufgeraeumten Steuerbereich.",
@@ -93,4 +95,3 @@ export function translateUiText(text: string, isDe: boolean): string {
   if (!isDe) return text;
   return EN_TO_DE[text] ?? text;
 }
-

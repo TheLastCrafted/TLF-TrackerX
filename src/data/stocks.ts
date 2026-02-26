@@ -1,3 +1,5 @@
+import { fetchWithWebProxy } from "./web-proxy";
+
 export type StockBreadthSnapshot = {
   total: number;
   up: number;
@@ -31,7 +33,7 @@ export async function fetchTopStockBreadth(limit = 200): Promise<StockBreadthSna
     `https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved` +
     `?formatted=false&scrIds=most_actives&count=${count}&start=0`;
 
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  const res = await fetchWithWebProxy(url, { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`Yahoo screener error: ${res.status}`);
 
   const json = (await res.json()) as YahooScreenerResponse;

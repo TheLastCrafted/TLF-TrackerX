@@ -28,6 +28,9 @@ const MAPPING = {
   'function': 'functions',
   'wallet.pass.fill': 'account-balance-wallet',
   'chart.bar.fill': 'bar-chart',
+  'drop.fill': 'water-drop',
+  'point.3.connected.trianglepath.dotted': 'hub',
+  'wand.and.stars': 'science',
 } as IconMapping;
 
 /**

@@ -1,13 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "expo-router";
-import { Image, Pressable, ScrollView, Text, View } from "react-native";
+import { Image, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { fetchNewsByCategory, NewsArticle, NewsCategory } from "../../src/data/news";
 import { useI18n } from "../../src/i18n/use-i18n";
+import { translateRuntimeText } from "../../src/i18n/runtime-translation";
 import { useNewsStore } from "../../src/state/news";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
+import { RefreshFeedback, refreshControlProps } from "../../src/ui/refresh-feedback";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
+
+type LocalizedSnippet = {
+  sourceTitle: string;
+  sourceSummary: string;
+  title: string;
+  summary: string;
+};
 
 export default function NewsScreen() {
   const router = useRouter();
@@ -25,36 +35,49 @@ export default function NewsScreen() {
   const [category, setCategory] = useState<NewsCategory>("global");
   const [rows, setRows] = useState<NewsArticle[]>([]);
   const [loading, setLoading] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [compactHeader, setCompactHeader] = useState(false);
   const [ageFilter, setAgeFilter] = useState<"all" | "24h" | "7d">("24h");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
+  const [localizedSnippets, setLocalizedSnippets] = useState<Record<string, LocalizedSnippet>>({});
+  const localizedRef = useRef<Record<string, LocalizedSnippet>>({});
+  const scrollRef = useRef<ScrollView>(null);
+  useLogoScrollToTop(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  });
+
+  const run = useCallback(async () => {
+    setLoading(true);
+    try {
+      const items = await fetchNewsByCategory(category);
+      setRows(items);
+      saveMany(items);
+    } catch {
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [category, saveMany]);
 
   useEffect(() => {
-    let alive = true;
-    const run = async () => {
-      setLoading(true);
-      try {
-        const items = await fetchNewsByCategory(category);
-        if (!alive) return;
-        setRows(items);
-        saveMany(items);
-      } catch {
-        if (alive) setRows([]);
-      } finally {
-        if (alive) setLoading(false);
-      }
-    };
-
     void run();
     const timer = setInterval(() => {
       void run();
     }, 60_000);
 
     return () => {
-      alive = false;
       clearInterval(timer);
     };
-  }, [category, saveMany]);
+  }, [run]);
+
+  const onManualRefresh = useCallback(async () => {
+    setManualRefreshing(true);
+    try {
+      await run();
+    } finally {
+      setManualRefreshing(false);
+    }
+  }, [run]);
 
   useEffect(() => {
     setSourceFilter("all");
@@ -85,13 +108,66 @@ export default function NewsScreen() {
 
   const hero = useMemo(() => filteredRows[0], [filteredRows]);
 
+  useEffect(() => {
+    localizedRef.current = localizedSnippets;
+  }, [localizedSnippets]);
+
+  useEffect(() => {
+    let active = true;
+    if (language === "en") {
+      setLocalizedSnippets({});
+      return () => {
+        active = false;
+      };
+    }
+
+    const targetRows = filteredRows.slice(0, 45);
+    const runTranslation = async () => {
+      const updates: Record<string, LocalizedSnippet> = {};
+      for (const row of targetRows) {
+        const cached = localizedRef.current[row.id];
+        if (cached && cached.sourceTitle === row.title && cached.sourceSummary === row.summary) continue;
+
+        const [title, summary] = await Promise.all([
+          translateRuntimeText(row.title, language, { sourceLanguage: "auto", chunkSize: 600 }),
+          translateRuntimeText(row.summary, language, { sourceLanguage: "auto", chunkSize: 700 }),
+        ]);
+        if (!active) return;
+        updates[row.id] = {
+          sourceTitle: row.title,
+          sourceSummary: row.summary,
+          title,
+          summary,
+        };
+      }
+      if (!active || !Object.keys(updates).length) return;
+      setLocalizedSnippets((prev) => ({ ...prev, ...updates }));
+    };
+
+    void runTranslation();
+    return () => {
+      active = false;
+    };
+  }, [filteredRows, language]);
+
   return (
     <ScrollView
+      ref={scrollRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={{ paddingBottom: 118 }}
       onScroll={(e) => setCompactHeader(e.nativeEvent.contentOffset.y > 140)}
       scrollEventThrottle={16}
+      refreshControl={
+        <RefreshControl
+          refreshing={manualRefreshing}
+          onRefresh={() => {
+            void onManualRefresh();
+          }}
+          {...refreshControlProps(colors, t("Refreshing news feed...", "News-Feed wird aktualisiert..."))}
+        />
+      }
     >
+      <RefreshFeedback refreshing={manualRefreshing} colors={colors} label={t("Refreshing headlines...", "Schlagzeilen werden aktualisiert...")} />
       {compactHeader && (
         <View
           style={{
@@ -210,8 +286,12 @@ export default function NewsScreen() {
                 resizeMode="cover"
               />
             )}
-            <Text style={{ color: colors.text, fontWeight: "900", fontSize: 17 }}>{hero.title}</Text>
-            <Text style={{ color: colors.subtext, marginTop: 6 }}>{hero.summary}</Text>
+            <Text style={{ color: colors.text, fontWeight: "900", fontSize: 17 }}>
+              {localizedSnippets[hero.id]?.title ?? hero.title}
+            </Text>
+            <Text style={{ color: colors.subtext, marginTop: 6 }}>
+              {localizedSnippets[hero.id]?.summary ?? hero.summary}
+            </Text>
             <Text style={{ color: colors.subtext, marginTop: 6, fontSize: 12 }}>{hero.source}</Text>
           </Pressable>
         )}
@@ -237,8 +317,12 @@ export default function NewsScreen() {
                 />
               ) : null}
 
-              <Text style={{ color: colors.text, fontWeight: "700" }} numberOfLines={2}>{item.title}</Text>
-              <Text style={{ color: colors.subtext, marginTop: 5 }} numberOfLines={2}>{item.summary}</Text>
+              <Text style={{ color: colors.text, fontWeight: "700" }} numberOfLines={2}>
+                {localizedSnippets[item.id]?.title ?? item.title}
+              </Text>
+              <Text style={{ color: colors.subtext, marginTop: 5 }} numberOfLines={2}>
+                {localizedSnippets[item.id]?.summary ?? item.summary}
+              </Text>
               <Text style={{ color: colors.subtext, marginTop: 5, fontSize: 12 }}>{item.source} • {item.pubDate ? new Date(item.pubDate).toLocaleString(language) : t("latest", "aktuell")}</Text>
             </Pressable>
           ))}

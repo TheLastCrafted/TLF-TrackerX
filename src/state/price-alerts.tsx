@@ -60,6 +60,21 @@ function nextId() {
   return `price_alert_${alertId}`;
 }
 
+function formatMoney(value: number, currency: "USD" | "EUR", language: "en" | "de"): string {
+  if (!Number.isFinite(value)) return "-";
+  return new Intl.NumberFormat(language, {
+    style: "currency",
+    currency,
+    maximumFractionDigits: value >= 100 ? 2 : 4,
+  }).format(value);
+}
+
+function formatPctCompact(value: number): string {
+  if (!Number.isFinite(value)) return "-";
+  const abs = Math.abs(value);
+  return `${value >= 0 ? "+" : "-"}${abs.toFixed(abs >= 10 ? 1 : 2)}%`;
+}
+
 export function PriceAlertProvider(props: { children: ReactNode }) {
   const { settings } = useSettings();
   const [alerts, setAlerts] = useState<PriceAlert[]>([]);
@@ -118,7 +133,7 @@ export function PriceAlertProvider(props: { children: ReactNode }) {
         );
 
         const now = Date.now();
-        const triggeredMessages: { title: string; body: string }[] = [];
+        const triggeredMessages: { title: string; body: string; data: Record<string, unknown> }[] = [];
 
         setAlerts((prev) =>
           prev.map((row) => {
@@ -155,13 +170,28 @@ export function PriceAlertProvider(props: { children: ReactNode }) {
 
             if (!hit) return next;
 
-            const detail =
+            const comparator = next.direction === "above" ? ">=" : "<=";
+            const targetText =
               next.mode === "price"
-                ? `${next.symbol} ${next.direction === "above" ? ">= " : "<= "}${Number(next.targetPrice).toFixed(4)}`
-                : `${next.symbol} ${next.direction === "above" ? "+" : "-"}${Math.abs(Number(next.relativeChangePct)).toFixed(2)}%`;
+                ? `${comparator} ${formatMoney(Number(next.targetPrice), settings.currency, settings.language)}`
+                : `${next.direction === "above" ? "+" : "-"}${Math.abs(Number(next.relativeChangePct)).toFixed(2)}%`;
+            const title = `${next.symbol.toUpperCase()} Price Alert`;
+            const body =
+              next.mode === "price"
+                ? `Target: ${targetText}\nNow: ${formatMoney(currentPrice, settings.currency, settings.language)}`
+                : `Move: ${targetText} from baseline\nNow: ${formatMoney(currentPrice, settings.currency, settings.language)} (${formatPctCompact(((currentPrice - Number(next.baselinePrice || currentPrice)) / Math.max(Number(next.baselinePrice || currentPrice), 1e-9)) * 100)})`;
             triggeredMessages.push({
-              title: "Price Alert Triggered",
-              body: `${detail} • ${currentPrice.toFixed(4)}`,
+              title,
+              body,
+              data: {
+                type: "price_alert",
+                alertId: next.id,
+                symbol: next.symbol,
+                mode: next.mode,
+                direction: next.direction,
+                target: next.mode === "price" ? Number(next.targetPrice) : Number(next.relativeChangePct),
+                currentPrice,
+              },
             });
             return { ...next, triggered: true, triggerPrice: currentPrice };
           })
@@ -170,7 +200,7 @@ export function PriceAlertProvider(props: { children: ReactNode }) {
         if (settings.priceAlerts && triggeredMessages.length) {
           let delivered = 0;
           for (const msg of triggeredMessages) {
-            const ok = await sendLocalNotification({ title: msg.title, body: msg.body });
+            const ok = await sendLocalNotification({ title: msg.title, body: msg.body, data: msg.data });
             if (ok) delivered += 1;
           }
           if (delivered === 0) {
@@ -192,7 +222,7 @@ export function PriceAlertProvider(props: { children: ReactNode }) {
       alive = false;
       clearInterval(timer);
     };
-  }, [alerts, settings.currency, settings.priceAlerts, settings.refreshSeconds]);
+  }, [alerts, settings.currency, settings.language, settings.priceAlerts, settings.refreshSeconds]);
 
   const value = useMemo<PriceAlertContextValue>(() => {
     return {
@@ -245,8 +275,8 @@ export function PriceAlertProvider(props: { children: ReactNode }) {
         if (state !== "granted") return false;
 
         const ok = await sendLocalNotification({
-          title: "TLF TrackerX",
-          body: "Test notification sent successfully.",
+          title: "TrackerX Notifications",
+          body: "Alerts are enabled and ready.",
           data: { type: "test" },
         });
         if (ok) return true;

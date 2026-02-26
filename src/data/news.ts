@@ -23,7 +23,10 @@ type RedditChild = {
     subreddit_name_prefixed?: string;
     thumbnail?: string;
     preview?: {
-      images?: { source?: { url?: string } }[];
+      images?: {
+        source?: { url?: string; width?: number; height?: number };
+        resolutions?: { url?: string; width?: number; height?: number }[];
+      }[];
     };
     media_metadata?: Record<
       string,
@@ -133,27 +136,82 @@ function isUsableImageUrl(url: string): boolean {
   return true;
 }
 
+function imageQualityScore(url: string): number {
+  const clean = normalizeImageUrl(url);
+  if (!clean) return -1;
+  let score = 0;
+  const lower = clean.toLowerCase();
+  if (lower.includes("thumbnail")) score -= 50;
+  if (lower.includes("preview.redd.it")) score -= 10;
+  if (lower.includes("i.redd.it")) score += 10;
+  if (lower.includes("images") || lower.includes("img") || lower.includes("photo")) score += 4;
+  try {
+    const parsed = new URL(clean);
+    const w = Number(parsed.searchParams.get("width"));
+    const h = Number(parsed.searchParams.get("height"));
+    if (Number.isFinite(w) && w > 0) score += Math.min(40, w / 20);
+    if (Number.isFinite(h) && h > 0) score += Math.min(40, h / 20);
+  } catch {}
+  return score;
+}
+
+function imageCanonicalKey(url: string): string {
+  const clean = normalizeImageUrl(url).toLowerCase();
+  if (!clean) return "";
+  try {
+    const parsed = new URL(clean);
+    // Canonicalize by origin+pathname to collapse same image served in multiple query-size variants.
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return clean;
+  }
+}
+
+function prioritizeImages(urls: string[]): string[] {
+  const byCanonical = new Map<string, { url: string; score: number }>();
+  for (const raw of urls) {
+    const url = normalizeImageUrl(raw);
+    if (!isUsableImageUrl(url)) continue;
+    const key = imageCanonicalKey(url);
+    if (!key) continue;
+    const score = imageQualityScore(url);
+    const prev = byCanonical.get(key);
+    if (!prev || score > prev.score) {
+      byCanonical.set(key, { url, score });
+    }
+  }
+  const unique = Array.from(byCanonical.values())
+    .sort((a, b) => b.score - a.score)
+    .map((row) => row.url);
+  return unique;
+}
+
 function buildImageList(child: RedditChild): string[] {
   const data = child.data;
   if (!data) return [];
-  const out: string[] = [];
-
-  const thumb = data.thumbnail ?? "";
-  if (isUsableImageUrl(thumb)) out.push(normalizeImageUrl(thumb));
+  const outPrimary: string[] = [];
+  const outFallback: string[] = [];
 
   const preview = data.preview?.images ?? [];
   for (const row of preview) {
     const src = row.source?.url;
-    if (src && isUsableImageUrl(src)) out.push(normalizeImageUrl(src));
+    if (src && isUsableImageUrl(src)) outPrimary.push(normalizeImageUrl(src));
+    const resolutions = row.resolutions ?? [];
+    for (const r of resolutions) {
+      if (r.url && isUsableImageUrl(r.url)) outPrimary.push(normalizeImageUrl(r.url));
+    }
   }
 
   const media = data.media_metadata ?? {};
   for (const key of Object.keys(media)) {
     const src = media[key]?.s?.u;
-    if (src && isUsableImageUrl(src)) out.push(normalizeImageUrl(src));
+    if (src && isUsableImageUrl(src)) outPrimary.push(normalizeImageUrl(src));
   }
 
-  return Array.from(new Set(out.filter(Boolean)));
+  const thumb = data.thumbnail ?? "";
+  if (isUsableImageUrl(thumb)) outFallback.push(normalizeImageUrl(thumb));
+
+  return prioritizeImages([...outPrimary, ...outFallback]);
 }
 
 function extractMetaImage(html: string): string | null {
@@ -197,14 +255,22 @@ async function fetchArticleImage(url: string): Promise<string | null> {
 }
 
 async function enrichArticleImages(rows: NewsArticle[]): Promise<void> {
-  const pending = rows.filter((row) => row.images.length === 0 && row.link.startsWith("http"));
+  const pending = rows.filter((row) => {
+    if (!row.link.startsWith("http")) return false;
+    if (!row.images.length) return true;
+    const topScore = imageQualityScore(row.images[0]);
+    return topScore < 10;
+  });
   const batchSize = 8;
   for (let i = 0; i < pending.length; i += batchSize) {
     const chunk = pending.slice(i, i + batchSize);
     const results = await Promise.all(chunk.map((row) => fetchArticleImage(row.link)));
     for (let j = 0; j < chunk.length; j += 1) {
       const image = results[j];
-      if (image) chunk[j].images = [image];
+      if (image) {
+        const existing = chunk[j].images ?? [];
+        chunk[j].images = prioritizeImages([image, ...existing]);
+      }
     }
   }
 }

@@ -9,6 +9,7 @@ export type AppAppearance = "system" | "dark" | "light";
 export type SimpleChartType = "line" | "bar";
 export type SimpleDensity = "low" | "medium" | "high";
 export type FocusRegion = "Global" | "US" | "EU";
+export type WorkspaceMode = "hybrid" | "institutional" | "personal";
 
 export type AppSettings = {
   language: AppLanguage;
@@ -50,6 +51,8 @@ export type AppSettings = {
   privacyMode: boolean;
   crashReports: boolean;
   analytics: boolean;
+  institutionalMode: boolean;
+  workspaceMode: WorkspaceMode;
 };
 
 type SettingsContextValue = {
@@ -97,6 +100,8 @@ const defaultSettings: AppSettings = {
   privacyMode: false,
   crashReports: true,
   analytics: true,
+  institutionalMode: false,
+  workspaceMode: "hybrid",
 };
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);

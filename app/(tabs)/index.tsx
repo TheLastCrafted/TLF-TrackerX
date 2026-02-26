@@ -1,7 +1,7 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Animated, LayoutAnimation, Platform, ScrollView, Text, UIManager, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Animated, LayoutAnimation, Platform, RefreshControl, ScrollView, Text, UIManager, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CHARTS } from "../../src/catalog/charts";
@@ -10,8 +10,11 @@ import { CoinMarket, fetchCoinGeckoMarkets, fetchCoinGeckoTopMarkets } from "../
 import { fetchFredSeries } from "../../src/data/macro";
 import { fetchTopStockBreadth, StockBreadthSnapshot } from "../../src/data/stocks";
 import { useI18n } from "../../src/i18n/use-i18n";
+import { loadPersistedJson, savePersistedJson } from "../../src/lib/persistence";
 import { useSettings } from "../../src/state/settings";
 import { useWatchlist } from "../../src/state/watchlist";
+import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
+import { RefreshFeedback, refreshControlProps } from "../../src/ui/refresh-feedback";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { HapticPressable as Pressable } from "../../src/ui/haptic-pressable";
 import { useAppColors } from "../../src/ui/use-app-colors";
@@ -56,7 +59,12 @@ type WidgetId =
   | "price_dispersion"
   | "alts_vs_btc"
   | "heatmap"
-  | "trend_strength";
+  | "trend_strength"
+  | "us_macro_pulse"
+  | "eu_macro_pulse"
+  | "market_health"
+  | "drawdown_risk"
+  | "btc_eth_ratio";
 
 const WIDGET_CATALOG: { id: WidgetId; label: string; size: WidgetSize }[] = [
   { id: "market_breadth", label: "Market Breadth", size: "lg" },
@@ -81,6 +89,11 @@ const WIDGET_CATALOG: { id: WidgetId; label: string; size: WidgetSize }[] = [
   { id: "price_dispersion", label: "Dispersion", size: "md" },
   { id: "alts_vs_btc", label: "Alts vs BTC", size: "md" },
   { id: "trend_strength", label: "Trend Strength", size: "md" },
+  { id: "us_macro_pulse", label: "US Macro Pulse", size: "md" },
+  { id: "eu_macro_pulse", label: "EU Macro Pulse", size: "md" },
+  { id: "market_health", label: "Market Health", size: "md" },
+  { id: "drawdown_risk", label: "Drawdown Risk", size: "sm" },
+  { id: "btc_eth_ratio", label: "BTC / ETH", size: "sm" },
 ];
 
 type MacroKey = "us_rate" | "us_unemp" | "us_cpi" | "us_10y" | "eu_rate" | "eu_unemp" | "eu_hicp" | "eurusd";
@@ -137,11 +150,21 @@ function MiniBars(props: { values: number[]; positiveColor: string; negativeColo
   );
 }
 
+const DEFAULT_HOME_WIDGETS: WidgetId[] = [
+  "market_breadth",
+  "top_movers",
+  "btc_dominance",
+  "flow_ratio",
+  "heatmap",
+  "watchlist_snapshot",
+  "risk_pulse",
+];
+
 export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { settings } = useSettings();
-  const { chartIds, coinIds } = useWatchlist();
+  const { chartIds, coinIds, equitySymbols } = useWatchlist();
   const colors = useAppColors();
   const { t } = useI18n();
 
@@ -159,15 +182,9 @@ export default function HomeScreen() {
   const dragOffsetsRef = useRef(new Map<WidgetId, Animated.Value>());
   const dragOffsetXRef = useRef(new Map<WidgetId, Animated.Value>());
   const [rotationIndex, setRotationIndex] = useState(0);
-  const [selectedWidgets, setSelectedWidgets] = useState<WidgetId[]>([
-    "market_breadth",
-    "top_movers",
-    "btc_dominance",
-    "flow_ratio",
-    "heatmap",
-    "watchlist_snapshot",
-    "risk_pulse",
-  ]);
+  const [selectedWidgets, setSelectedWidgets] = useState<WidgetId[]>(DEFAULT_HOME_WIDGETS);
+  const [layoutHydrated, setLayoutHydrated] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -242,10 +259,94 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
+    let alive = true;
+    (async () => {
+      const saved = await loadPersistedJson<{
+        selectedWidgets: WidgetId[];
+        widgetSizeOverrides: Partial<Record<WidgetId, WidgetSize>>;
+      }>("home_widgets_layout", { selectedWidgets: DEFAULT_HOME_WIDGETS, widgetSizeOverrides: {} });
+      if (!alive) return;
+      const allowed = new Set<WidgetId>(WIDGET_CATALOG.map((w) => w.id));
+      const nextSelected = Array.isArray(saved.selectedWidgets)
+        ? saved.selectedWidgets.filter((id): id is WidgetId => allowed.has(id as WidgetId))
+        : DEFAULT_HOME_WIDGETS;
+      setSelectedWidgets(nextSelected.length ? nextSelected : DEFAULT_HOME_WIDGETS);
+      const validSizes: Partial<Record<WidgetId, WidgetSize>> = {};
+      if (saved.widgetSizeOverrides && typeof saved.widgetSizeOverrides === "object") {
+        for (const [key, value] of Object.entries(saved.widgetSizeOverrides)) {
+          if (allowed.has(key as WidgetId) && (value === "sm" || value === "md" || value === "lg")) {
+            validSizes[key as WidgetId] = value;
+          }
+        }
+      }
+      setWidgetSizeOverrides(validSizes);
+      setLayoutHydrated(true);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!layoutHydrated) return;
+    void savePersistedJson("home_widgets_layout", { selectedWidgets, widgetSizeOverrides });
+  }, [selectedWidgets, widgetSizeOverrides, layoutHydrated]);
+
+  useEffect(() => {
     if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
       UIManager.setLayoutAnimationEnabledExperimental(true);
     }
   }, []);
+
+  const onManualRefresh = useCallback(async () => {
+    setManualRefreshing(true);
+    try {
+      const [rows, breadth, macroEntries] = await Promise.all([
+        (async () => {
+          try {
+            return await fetchCoinGeckoTopMarkets({
+              vsCurrency: settings.currency.toLowerCase() as "usd" | "eur",
+              page: 1,
+              perPage: 200,
+              useCache: false,
+            });
+          } catch {
+            try {
+              return await fetchCoinGeckoMarkets({
+                ids: TRACKED_COINS.map((c) => c.id),
+                vsCurrency: settings.currency.toLowerCase() as "usd" | "eur",
+                useCache: false,
+              });
+            } catch {
+              return [];
+            }
+          }
+        })(),
+        (async () => {
+          try {
+            return await fetchTopStockBreadth(200);
+          } catch {
+            return null;
+          }
+        })(),
+        Promise.all(
+          (Object.keys(MACRO_SERIES) as MacroKey[]).map(async (key) => {
+            try {
+              const points = await fetchFredSeries({ seriesId: MACRO_SERIES[key], days: 3650 });
+              return [key, { current: points[points.length - 1]?.y ?? NaN, previous: points[points.length - 2]?.y ?? NaN }] as const;
+            } catch {
+              return [key, { current: NaN, previous: NaN }] as const;
+            }
+          })
+        ),
+      ]);
+      setMarkets(rows);
+      setStockBreadth(breadth);
+      setMacroValues(Object.fromEntries(macroEntries));
+    } finally {
+      setManualRefreshing(false);
+    }
+  }, [settings.currency]);
 
   const dragOffsetFor = (id: WidgetId) => {
     const existing = dragOffsetsRef.current.get(id);
@@ -314,6 +415,11 @@ export default function HomeScreen() {
   const laggards = useMemo(() => [...markets].sort((a, b) => (a.price_change_percentage_24h ?? 999) - (b.price_change_percentage_24h ?? 999)).slice(0, 6), [markets]);
   const btc = useMemo(() => markets.find((r) => r.id === "bitcoin" || r.symbol.toLowerCase() === "btc"), [markets]);
   const eth = useMemo(() => markets.find((r) => r.id === "ethereum" || r.symbol.toLowerCase() === "eth"), [markets]);
+  const marketById = useMemo(() => {
+    const map: Record<string, CoinMarket> = {};
+    for (const row of markets) map[row.id] = row;
+    return map;
+  }, [markets]);
   const btcDominance = useMemo(() => (btc && marketCap > 0 ? (btc.market_cap / marketCap) * 100 : NaN), [btc, marketCap]);
 
   const aggregateMarketCapYesterday = useMemo(
@@ -348,9 +454,36 @@ export default function HomeScreen() {
     [marketCap, marketCapChangePct, btc, eth, volume, volumeChangePct, btcDominance]
   );
   const cryptoRotating = cryptoRotation[rotationIndex % cryptoRotation.length];
+  const watchlistCoinPreview = useMemo(() => {
+    return coinIds
+      .slice(0, 2)
+      .map((id) => marketById[id])
+      .filter(Boolean)
+      .map((row) => `${row.symbol.toUpperCase()} ${money(row.current_price)}`);
+  }, [coinIds, marketById]);
+  const watchlistChartPreview = useMemo(() => {
+    return chartIds
+      .slice(0, 2)
+      .map((id) => CHARTS.find((c) => c.id === id))
+      .map((chart) => {
+        if (!chart) return "";
+        if (chart.type !== "coingecko_market_chart") return chart.title;
+        const row = marketById[chart.params.coinId];
+        if (!row) return chart.title;
+        if (chart.params.metric === "prices") return `${chart.title} ${money(row.current_price)}`;
+        if (chart.params.metric === "market_caps") return `${chart.title} ${money(row.market_cap)}`;
+        return `${chart.title} ${money(row.total_volume)}`;
+      })
+      .filter(Boolean);
+  }, [chartIds, marketById]);
+  const watchlistEquityPreview = useMemo(
+    () => equitySymbols.slice(0, 2).map((symbol) => `${symbol.toUpperCase()}`),
+    [equitySymbols]
+  );
 
   const shortcuts = [
     { label: t("Crypto", "Krypto"), icon: "currency-bitcoin", route: "/crypto", tint: "#9B80FF" },
+    { label: t("Stocks", "Aktien"), icon: "trending-up", route: "/stocks", tint: "#79B9FF" },
     { label: t("Charts", "Charts"), icon: "show-chart", route: "/charts", tint: "#79B9FF" },
     { label: t("Macro", "Makro"), icon: "public", route: "/explore", tint: "#6FD6C8" },
     { label: t("News", "News"), icon: "article", route: "/news", tint: "#8EC8FF" },
@@ -468,7 +601,7 @@ export default function HomeScreen() {
   } as const;
 
   const renderWidget = (id: WidgetId) => {
-    const totalSavedWatchlist = coinIds.length + chartIds.length;
+    const totalSavedWatchlist = coinIds.length + equitySymbols.length + chartIds.length;
     switch (id) {
       case "market_breadth": {
         const cryptoUp = positive;
@@ -516,7 +649,17 @@ export default function HomeScreen() {
         return (
           <>
             <Text style={{ color: colors.text, fontWeight: "800" }}>Momentum Heatmap</Text>
+            <Text style={{ color: colors.subtext, marginTop: 4, fontSize: 12 }}>
+              24h momentum snapshot: green = strongest gainers, red = strongest losers.
+            </Text>
             <MiniBars values={strip} positiveColor="#4DD9A5" negativeColor="#F08BA1" />
+            <View style={{ marginTop: 5, flexDirection: "row", justifyContent: "space-between" }}>
+              <Text style={{ color: colors.subtext, fontSize: 10 }}>Left: top gainers</Text>
+              <Text style={{ color: colors.subtext, fontSize: 10 }}>Right: top losers</Text>
+            </View>
+            <Text style={{ color: colors.subtext, marginTop: 6, fontSize: 11 }}>
+              Taller bars = larger absolute 24h moves. This is ranking, not a time axis.
+            </Text>
           </>
         );
       }
@@ -553,7 +696,17 @@ export default function HomeScreen() {
         return (
           <>
             <Text style={{ color: colors.text, fontWeight: "800" }}>Volatility</Text>
+            <Text style={{ color: colors.subtext, marginTop: 4, fontSize: 12 }}>
+              Absolute 24h movement for top 10 market-cap assets.
+            </Text>
             <MiniBars values={markets.slice(0, 10).map((m) => Math.abs(m.price_change_percentage_24h ?? 0))} positiveColor="#7DA7FF" negativeColor="#7DA7FF" />
+            <View style={{ marginTop: 5, flexDirection: "row", justifyContent: "space-between" }}>
+              <Text style={{ color: colors.subtext, fontSize: 10 }}>#1 mcap</Text>
+              <Text style={{ color: colors.subtext, fontSize: 10 }}>#10 mcap</Text>
+            </View>
+            <Text style={{ color: colors.subtext, marginTop: 6, fontSize: 11 }}>
+              Higher bar = more intraday volatility. Bars are asset rank, not time.
+            </Text>
           </>
         );
       case "rotation":
@@ -601,18 +754,39 @@ export default function HomeScreen() {
       case "watchlist_snapshot":
         return (
           <>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>Watchlist</Text>
-            <Text style={{ color: colors.text, marginTop: 5, fontWeight: "900", fontSize: 18 }}>{totalSavedWatchlist ? "Active" : "Empty"}</Text>
-            <Text style={{ color: colors.subtext, marginTop: 2, fontSize: 11 }}>
-              {coinIds.length} coins • {chartIds.length} charts
-            </Text>
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <View style={{ flex: 0.58 }}>
+                <Text style={{ color: colors.subtext, fontSize: 12 }}>Watchlist</Text>
+                <Text style={{ color: colors.text, marginTop: 5, fontWeight: "900", fontSize: 18 }}>{totalSavedWatchlist ? "Active" : "Empty"}</Text>
+                <Text style={{ color: colors.subtext, marginTop: 2, fontSize: 11 }}>
+                  {coinIds.length} coins • {equitySymbols.length} stocks • {chartIds.length} charts
+                </Text>
+              </View>
+              <View style={{ flex: 0.42, alignItems: "flex-end", justifyContent: "center", gap: 3 }}>
+                {watchlistCoinPreview.map((line) => (
+                  <Text key={`coin_${line}`} style={{ color: colors.accent2, fontSize: 11, fontWeight: "700" }} numberOfLines={1}>
+                    {line}
+                  </Text>
+                ))}
+                {watchlistEquityPreview.map((line) => (
+                  <Text key={`stock_${line}`} style={{ color: "#79B9FF", fontSize: 11, fontWeight: "700" }} numberOfLines={1}>
+                    {line}
+                  </Text>
+                ))}
+                {watchlistChartPreview.map((line) => (
+                  <Text key={`chart_${line}`} style={{ color: colors.subtext, fontSize: 11 }} numberOfLines={1}>
+                    {line}
+                  </Text>
+                ))}
+              </View>
+            </View>
           </>
         );
       case "saved_assets":
         return (
           <>
             <Text style={{ color: colors.subtext, fontSize: 12 }}>Saved</Text>
-            <Text style={{ color: colors.text, marginTop: 5, fontWeight: "900", fontSize: 18 }}>{coinIds.length + chartIds.length}</Text>
+            <Text style={{ color: colors.text, marginTop: 5, fontWeight: "900", fontSize: 18 }}>{coinIds.length + equitySymbols.length + chartIds.length}</Text>
           </>
         );
       case "crypto_coverage":
@@ -666,17 +840,103 @@ export default function HomeScreen() {
           </>
         );
       }
+      case "us_macro_pulse": {
+        const fed = macroValues.us_rate;
+        const unemp = macroValues.us_unemp;
+        const y10 = macroValues.us_10y;
+        const fedDelta = (fed?.current ?? NaN) - (fed?.previous ?? NaN);
+        const unempDelta = (unemp?.current ?? NaN) - (unemp?.previous ?? NaN);
+        const y10Delta = (y10?.current ?? NaN) - (y10?.previous ?? NaN);
+        return (
+          <>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>US Macro Pulse</Text>
+            <Text style={{ color: colors.subtext, marginTop: 6 }}>Fed {metric(fed?.current ?? NaN, "pct")} • Unemp {metric(unemp?.current ?? NaN, "pct")}</Text>
+            <Text style={{ color: colors.subtext, marginTop: 2 }}>10Y {metric(y10?.current ?? NaN, "pct")}</Text>
+            <Text style={{ color: deltaColor((fedDelta + unempDelta + y10Delta) / 3), marginTop: 6, fontWeight: "700" }}>
+              {Number.isFinite(fedDelta) ? `${fedDelta >= 0 ? "+" : ""}${fedDelta.toFixed(2)} fed delta` : "No live delta"}
+            </Text>
+          </>
+        );
+      }
+      case "eu_macro_pulse": {
+        const ecb = macroValues.eu_rate;
+        const unemp = macroValues.eu_unemp;
+        const hicp = macroValues.eu_hicp;
+        const ecbDelta = (ecb?.current ?? NaN) - (ecb?.previous ?? NaN);
+        const hicpDelta = (hicp?.current ?? NaN) - (hicp?.previous ?? NaN);
+        return (
+          <>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>EU Macro Pulse</Text>
+            <Text style={{ color: colors.subtext, marginTop: 6 }}>ECB {metric(ecb?.current ?? NaN, "pct")} • Unemp {metric(unemp?.current ?? NaN, "pct")}</Text>
+            <Text style={{ color: colors.subtext, marginTop: 2 }}>HICP {metric(hicp?.current ?? NaN, "num")}</Text>
+            <Text style={{ color: deltaColor((ecbDelta + hicpDelta) / 2), marginTop: 6, fontWeight: "700" }}>
+              {Number.isFinite(ecbDelta) ? `${ecbDelta >= 0 ? "+" : ""}${ecbDelta.toFixed(2)} policy delta` : "No live delta"}
+            </Text>
+          </>
+        );
+      }
+      case "market_health": {
+        const breadthRatio = markets.length ? positive / markets.length : NaN;
+        const score = Number.isFinite(breadthRatio) ? Math.max(0, Math.min(100, breadthRatio * 65 + Math.max(0, 35 - avgMove * 4))) : NaN;
+        return (
+          <>
+            <Text style={{ color: colors.text, fontWeight: "800" }}>Market Health</Text>
+            <Text style={{ color: colors.text, marginTop: 5, fontWeight: "900", fontSize: 20 }}>{Number.isFinite(score) ? `${score.toFixed(0)}/100` : "-"}</Text>
+            <Text style={{ color: colors.subtext, marginTop: 3 }}>Breadth {(breadthRatio * 100).toFixed(0)}% • Avg move {avgMove.toFixed(2)}%</Text>
+          </>
+        );
+      }
+      case "drawdown_risk": {
+        const worst = laggards[0]?.price_change_percentage_24h ?? NaN;
+        const bottom3 = laggards.slice(0, 3).map((m) => m.price_change_percentage_24h ?? 0);
+        const avgBottom = bottom3.length ? bottom3.reduce((s, x) => s + x, 0) / bottom3.length : NaN;
+        return (
+          <>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>Drawdown Risk</Text>
+            <Text style={{ color: colors.text, marginTop: 5, fontWeight: "900", fontSize: 18 }}>{Number.isFinite(worst) ? pct(worst) : "-"}</Text>
+            <Text style={{ color: colors.subtext, marginTop: 2, fontSize: 11 }}>Bottom-3 avg {Number.isFinite(avgBottom) ? pct(avgBottom) : "-"}</Text>
+          </>
+        );
+      }
+      case "btc_eth_ratio": {
+        const ratio = btc && eth && eth.current_price > 0 ? btc.current_price / eth.current_price : NaN;
+        const delta = (btc?.price_change_percentage_24h ?? 0) - (eth?.price_change_percentage_24h ?? 0);
+        return (
+          <>
+            <Text style={{ color: colors.subtext, fontSize: 12 }}>BTC / ETH</Text>
+            <Text style={{ color: colors.text, marginTop: 5, fontWeight: "900", fontSize: 18 }}>{Number.isFinite(ratio) ? ratio.toFixed(2) : "-"}</Text>
+            <Text style={{ color: deltaColor(delta), marginTop: 2, fontSize: 11, fontWeight: "700" }}>
+              {Number.isFinite(delta) ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}% rel` : "-"}
+            </Text>
+          </>
+        );
+      }
       default:
         return <Text style={{ color: colors.subtext }}>-</Text>;
     }
   };
+  const scrollRef = useRef<ScrollView>(null);
+  useLogoScrollToTop(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  });
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={{ paddingBottom: 118 }}
       scrollEnabled={!draggingWidget}
+      refreshControl={
+        <RefreshControl
+          refreshing={manualRefreshing}
+          onRefresh={() => {
+            void onManualRefresh();
+          }}
+          {...refreshControlProps(colors, "Refreshing dashboard...")}
+        />
+      }
     >
+      <RefreshFeedback refreshing={manualRefreshing} colors={colors} label={t("Refreshing dashboard data...", "Dashboard-Daten werden aktualisiert...")} />
       <TabHeader title={t("Home", "Start")} />
 
       <View style={{ paddingHorizontal: SCREEN_HORIZONTAL_PADDING }}>
@@ -733,13 +993,14 @@ export default function HomeScreen() {
 
         <View style={[cardStyle, { marginBottom: 10 }]}> 
           <Text style={{ color: colors.text, fontWeight: "800", marginBottom: 8 }}>{t("Quick Nav", "Schnellnavigation")}</Text>
-          <View style={{ flexDirection: "row", gap: 8 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {shortcuts.map((s) => (
               <Pressable
                 key={s.label}
                 onPress={() => router.push(s.route)}
                 style={({ pressed }) => ({
-                  flex: 1,
+                  width: "18.2%",
+                  minWidth: 62,
                   borderRadius: 14,
                   borderWidth: 1,
                   borderColor: colors.border,

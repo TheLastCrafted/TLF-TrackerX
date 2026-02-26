@@ -1,23 +1,33 @@
 import { Tabs } from "expo-router";
 import React from "react";
-import { useColorScheme } from "react-native";
+import { View, useColorScheme } from "react-native";
 
 import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useAppMode } from "@/src/state/app-mode";
 import { useSettings } from "@/src/state/settings";
+import { CommandCenterOverlay } from "@/src/ui/command-center-overlay";
 import { MinimalBottomBar } from "@/src/ui/minimal-bottom-bar";
 
 export default function TabLayout() {
-  const { mode } = useAppMode();
+  const { mode, setMode } = useAppMode();
   const { settings } = useSettings();
   const deviceScheme = useColorScheme();
   const activeScheme = settings.appAppearance === "system" ? (deviceScheme ?? "dark") : settings.appAppearance;
   const isDark = activeScheme === "dark";
   const info = mode === "informational";
   const personal = mode === "personal";
+  const workspaceMode = settings.workspaceMode ?? (settings.institutionalMode ? "institutional" : "hybrid");
+  const institution = workspaceMode === "institutional";
+  const personalOnly = workspaceMode === "personal";
+
+  React.useEffect(() => {
+    if (institution && mode !== "informational") setMode("informational");
+    if (personalOnly && mode !== "personal") setMode("personal");
+  }, [institution, personalOnly, mode, setMode]);
 
   return (
+    <View style={{ flex: 1 }}>
     <Tabs
       tabBar={(props) => <MinimalBottomBar {...props} />}
       screenOptions={{
@@ -42,7 +52,7 @@ export default function TabLayout() {
         name="index"
         options={{
           title: "Home",
-          tabBarItemStyle: personal ? { display: "none" } : undefined,
+          tabBarItemStyle: personal || personalOnly ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="house.fill" color={color} />,
         }}
       />
@@ -51,7 +61,7 @@ export default function TabLayout() {
         name="charts"
         options={{
           title: "Charts",
-          tabBarItemStyle: personal ? { display: "none" } : undefined,
+          tabBarItemStyle: personal || personalOnly ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="chart.line.uptrend.xyaxis" color={color} />,
         }}
       />
@@ -60,8 +70,17 @@ export default function TabLayout() {
         name="crypto"
         options={{
           title: "Crypto",
-          tabBarItemStyle: personal ? { display: "none" } : undefined,
+          tabBarItemStyle: personal || personalOnly ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="bitcoinsign.circle.fill" color={color} />,
+        }}
+      />
+
+      <Tabs.Screen
+        name="stocks"
+        options={{
+          title: "Stocks",
+          tabBarItemStyle: personal || personalOnly ? { display: "none" } : undefined,
+          tabBarIcon: ({ color }) => <IconSymbol size={24} name="chart.line.uptrend.xyaxis.circle.fill" color={color} />,
         }}
       />
 
@@ -69,7 +88,7 @@ export default function TabLayout() {
         name="explore"
         options={{
           title: "Macro",
-          tabBarItemStyle: personal ? { display: "none" } : undefined,
+          tabBarItemStyle: personal || personalOnly ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="globe.europe.africa.fill" color={color} />,
         }}
       />
@@ -78,7 +97,7 @@ export default function TabLayout() {
         name="watchlist"
         options={{
           title: "Watchlist",
-          tabBarItemStyle: personal ? { display: "none" } : undefined,
+          tabBarItemStyle: personal || personalOnly ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="star.fill" color={color} />,
         }}
       />
@@ -87,7 +106,7 @@ export default function TabLayout() {
         name="news"
         options={{
           title: "News",
-          tabBarItemStyle: personal ? { display: "none" } : undefined,
+          tabBarItemStyle: personal || personalOnly ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="newspaper.fill" color={color} />,
         }}
       />
@@ -96,8 +115,35 @@ export default function TabLayout() {
         name="research"
         options={{
           title: "Research",
-          tabBarItemStyle: personal ? { display: "none" } : undefined,
+          tabBarItemStyle: personal || personalOnly ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="book.fill" color={color} />,
+        }}
+      />
+
+      <Tabs.Screen
+        name="liquidity"
+        options={{
+          title: "Liquidity",
+          tabBarItemStyle: personal || personalOnly ? { display: "none" } : undefined,
+          tabBarIcon: ({ color }) => <IconSymbol size={24} name="drop.fill" color={color} />,
+        }}
+      />
+
+      <Tabs.Screen
+        name="correlations"
+        options={{
+          title: "Correlations",
+          tabBarItemStyle: personal || personalOnly ? { display: "none" } : undefined,
+          tabBarIcon: ({ color }) => <IconSymbol size={24} name="point.3.connected.trianglepath.dotted" color={color} />,
+        }}
+      />
+
+      <Tabs.Screen
+        name="scenario"
+        options={{
+          title: "Scenario",
+          tabBarItemStyle: personal || personalOnly ? { display: "none" } : undefined,
+          tabBarIcon: ({ color }) => <IconSymbol size={24} name="wand.and.stars" color={color} />,
         }}
       />
 
@@ -105,7 +151,7 @@ export default function TabLayout() {
         name="tools"
         options={{
           title: "Personal",
-          tabBarItemStyle: info ? { display: "none" } : undefined,
+          tabBarItemStyle: (info && !personalOnly) || institution ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="wrench.and.screwdriver.fill" color={color} />,
         }}
       />
@@ -114,7 +160,7 @@ export default function TabLayout() {
         name="portfolio"
         options={{
           title: "Portfolio",
-          tabBarItemStyle: info ? { display: "none" } : undefined,
+          tabBarItemStyle: (info && !personalOnly) || institution ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="briefcase.fill" color={color} />,
         }}
       />
@@ -123,7 +169,7 @@ export default function TabLayout() {
         name="strategy"
         options={{
           title: "Strategy",
-          tabBarItemStyle: info ? { display: "none" } : undefined,
+          tabBarItemStyle: (info && !personalOnly) || institution ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="function" color={color} />,
         }}
       />
@@ -132,7 +178,7 @@ export default function TabLayout() {
         name="budget"
         options={{
           title: "Budget",
-          tabBarItemStyle: info ? { display: "none" } : undefined,
+          tabBarItemStyle: (info && !personalOnly) || institution ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="wallet.pass.fill" color={color} />,
         }}
       />
@@ -141,7 +187,7 @@ export default function TabLayout() {
         name="cashflow"
         options={{
           title: "Cashflow",
-          tabBarItemStyle: info ? { display: "none" } : undefined,
+          tabBarItemStyle: (info && !personalOnly) || institution ? { display: "none" } : undefined,
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="chart.bar.fill" color={color} />,
         }}
       />
@@ -155,5 +201,7 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+    <CommandCenterOverlay />
+    </View>
   );
 }
