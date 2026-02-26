@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { Platform } from "react-native";
 import { loadPersistedJson, savePersistedJson } from "../lib/persistence";
 import { fetchCoinGeckoMarkets } from "../data/coingecko";
 import { fetchStockQuoteSnapshot } from "../data/stocks-live";
@@ -65,15 +66,18 @@ export function WatchlistProvider(props: { children: ReactNode }) {
       if (!coinIds.length && !equitySymbols.length) return;
       inFlight = true;
       try {
+        const preferCache = Platform.OS === "web";
         await Promise.all([
           coinIds.length
             ? fetchCoinGeckoMarkets({
                 ids: coinIds,
                 vsCurrency: settings.currency.toLowerCase() as "usd" | "eur",
-                useCache: false,
+                useCache: preferCache,
               })
             : Promise.resolve([]),
-          equitySymbols.length ? fetchStockQuoteSnapshot(equitySymbols, { useCache: false }) : Promise.resolve([]),
+          equitySymbols.length
+            ? fetchStockQuoteSnapshot(equitySymbols, { useCache: preferCache, cacheTtlMs: preferCache ? 45_000 : 10_000 })
+            : Promise.resolve([]),
         ]);
       } catch {
         // Best effort background refresh.
@@ -85,7 +89,7 @@ export function WatchlistProvider(props: { children: ReactNode }) {
     void tick();
     timer = setInterval(() => {
       void tick();
-    }, 45_000);
+    }, Platform.OS === "web" ? 120_000 : 45_000);
 
     return () => {
       alive = false;

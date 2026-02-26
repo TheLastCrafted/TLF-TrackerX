@@ -2,7 +2,7 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Image, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Image, Platform, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CHARTS } from "../../src/catalog/charts";
@@ -196,6 +196,12 @@ export default function WatchlistScreen() {
         );
       }
 
+      // On native we run a non-blocking network revalidation.
+      // On web this can easily trigger upstream 429s, so we skip it.
+      if (Platform.OS === "web") {
+        return;
+      }
+
       // Non-blocking revalidation: refresh from network after showing cache-backed data.
       void (async () => {
         const [coinFresh, equityFresh] = await Promise.all([
@@ -216,7 +222,7 @@ export default function WatchlistScreen() {
         ]);
         const topFresh =
           equitySymbols.length > 0
-            ? await withTimeout(fetchTopStocks({ count: 220, useCache: false, cacheTtlMs: 45_000 }), 8_000, [] as StockMarketRow[])
+            ? await withTimeout(fetchTopStocks({ count: 220, useCache: true, cacheTtlMs: 60_000 }), 8_000, [] as StockMarketRow[])
             : [];
         const mergedFreshEquities = mergeEquityWithUniverse(equityFresh, topFresh);
 
@@ -578,10 +584,11 @@ export default function WatchlistScreen() {
                           24h {formatPct(row.changePct)}
                         </Text>
                         <Text style={{ color: "#96A1C8", fontWeight: "700" }}>
-                          {t("MCap", "Marktkap.")} {formatMoney(row.marketCap, settings.currency, true, settings.language)}
+                          {t("MCap", "Marktkap.")}{" "}
+                          {row.marketCap > 0 ? formatMoney(row.marketCap, settings.currency, true, settings.language) : "-"}
                         </Text>
                         <Text style={{ color: "#A4B1D9", fontWeight: "700" }}>
-                          {t("Vol", "Vol")} {formatMoney(row.volume, settings.currency, true, settings.language)}
+                          {t("Vol", "Vol")} {row.volume > 0 ? formatMoney(row.volume, settings.currency, true, settings.language) : "-"}
                         </Text>
                       </View>
                     </Pressable>

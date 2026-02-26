@@ -1,12 +1,17 @@
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, FlatList, Image, Pressable, RefreshControl, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, Image, Platform, Pressable, RefreshControl, Text, TextInput, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { searchUniversalAssets, UniversalAsset } from "../../src/data/asset-search";
-import { fetchStockQuoteSnapshot, fetchTopStocks, StockMarketRow } from "../../src/data/stocks-live";
+import {
+  fetchStockQuoteSnapshot,
+  fetchTopStocks,
+  getLocalStockFallbackRows,
+  StockMarketRow,
+} from "../../src/data/stocks-live";
 import { useI18n } from "../../src/i18n/use-i18n";
 import { usePriceAlerts } from "../../src/state/price-alerts";
 import { useSettings } from "../../src/state/settings";
@@ -97,10 +102,13 @@ export default function StocksScreen() {
   }, []);
 
   const refreshLiveQuotes = useCallback(async (): Promise<boolean> => {
-    const symbols = rowSymbols.slice(0, 230);
+    const symbols = rowSymbols.slice(0, Platform.OS === "web" ? 90 : 230);
     if (!symbols.length) return false;
     try {
-      const live = await fetchStockQuoteSnapshot(symbols, { useCache: true, cacheTtlMs: 8_000 });
+      const live = await fetchStockQuoteSnapshot(symbols, {
+        useCache: true,
+        cacheTtlMs: Platform.OS === "web" ? 25_000 : 8_000,
+      });
       if (!live.length) return false;
       const bySymbol = new Map(live.map((row) => [row.symbol, row]));
       let changed = false;
@@ -164,11 +172,31 @@ export default function StocksScreen() {
           setError(null);
           return true;
         }
-        setError(t("Could not update stock feed right now.", "Stock-Feed konnte aktuell nicht aktualisiert werden."));
-        return rows.length > 0;
+        const fallbackRows = getLocalStockFallbackRows(200);
+        if (fallbackRows.length) {
+          setRows(fallbackRows);
+          setLastUpdatedAt(Date.now());
+        }
+        setError(
+          t(
+            "Live stock provider is rate-limited right now. Showing fallback rows.",
+            "Live-Aktienanbieter ist aktuell limitiert. Es werden Fallback-Daten angezeigt."
+          )
+        );
+        return fallbackRows.length > 0 || rows.length > 0;
       } catch {
-        setError(t("Could not update stock feed right now.", "Stock-Feed konnte aktuell nicht aktualisiert werden."));
-        return rows.length > 0;
+        const fallbackRows = getLocalStockFallbackRows(200);
+        if (fallbackRows.length) {
+          setRows(fallbackRows);
+          setLastUpdatedAt(Date.now());
+        }
+        setError(
+          t(
+            "Live stock provider is rate-limited right now. Showing fallback rows.",
+            "Live-Aktienanbieter ist aktuell limitiert. Es werden Fallback-Daten angezeigt."
+          )
+        );
+        return fallbackRows.length > 0 || rows.length > 0;
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -259,7 +287,7 @@ export default function StocksScreen() {
       };
     }
 
-    const baseDelayMs = Math.max(6, settings.refreshSeconds) * 1000;
+    const baseDelayMs = Math.max(Platform.OS === "web" ? 20 : 6, settings.refreshSeconds) * 1000;
 
     const schedule = () => {
       if (!alive) return;

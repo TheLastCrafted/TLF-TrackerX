@@ -1,3 +1,4 @@
+import { FINANCIAL_ASSETS } from "../catalog/financial-assets";
 import { fetchWithWebProxy } from "./web-proxy";
 
 export type StockKind = "stock" | "etf";
@@ -104,6 +105,9 @@ const topStocksInflight = new Map<string, Promise<StockMarketRow[]>>();
 const quoteCache = new Map<string, { expiresAt: number; rows: StockMarketRow[] }>();
 const quoteInflight = new Map<string, Promise<StockMarketRow[]>>();
 const YAHOO_TIMEOUT_MS = 6500;
+const LOCAL_BY_SYMBOL = new Map(
+  FINANCIAL_ASSETS.filter((row) => row.kind === "stock" || row.kind === "etf").map((row) => [row.symbol.toUpperCase(), row])
+);
 
 function asNumber(v: YahooNumber | undefined): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -123,6 +127,46 @@ function parseKind(input: string | undefined): StockKind | null {
   if (t === "EQUITY") return "stock";
   if (t === "ETF" || t === "MUTUALFUND") return "etf";
   return null;
+}
+
+function localFallbackRow(symbol: string): StockMarketRow | null {
+  const meta = LOCAL_BY_SYMBOL.get(symbol.toUpperCase());
+  if (!meta) return null;
+  return {
+    symbol: meta.symbol.toUpperCase(),
+    name: meta.name,
+    kind: meta.kind === "etf" ? "etf" : "stock",
+    price: Number(meta.defaultPrice ?? 0),
+    changePct: 0,
+    marketCap: 0,
+    volume: 0,
+    currency: "USD",
+    exchange: undefined,
+    lastUpdatedAt: Date.now(),
+    logoUrl: stockLogoUrl(meta.symbol),
+  };
+}
+
+function buildLocalFallbackRows(count: number): StockMarketRow[] {
+  return FINANCIAL_ASSETS.filter((row) => row.kind === "stock" || row.kind === "etf")
+    .slice(0, count)
+    .map((asset) => ({
+      symbol: asset.symbol.toUpperCase(),
+      name: asset.name,
+      kind: asset.kind === "etf" ? "etf" : "stock",
+      price: Number(asset.defaultPrice ?? 0),
+      changePct: 0,
+      marketCap: 0,
+      volume: 0,
+      currency: "USD",
+      exchange: undefined,
+      lastUpdatedAt: Date.now(),
+      logoUrl: stockLogoUrl(asset.symbol),
+    }));
+}
+
+export function getLocalStockFallbackRows(count = 200): StockMarketRow[] {
+  return buildLocalFallbackRows(Math.max(20, Math.min(220, Math.floor(count))));
 }
 
 export function stockLogoUrl(symbol: string): string {
@@ -207,8 +251,9 @@ export async function fetchTopStocks(params?: {
         return (b.volume || 0) - (a.volume || 0);
       })
       .slice(0, count);
-    topStocksCache.set(key, { expiresAt: Date.now() + cacheTtlMs, rows });
-    return rows;
+    const safeRows = rows.length ? rows : buildLocalFallbackRows(count);
+    topStocksCache.set(key, { expiresAt: Date.now() + cacheTtlMs, rows: safeRows });
+    return safeRows;
   })();
 
   topStocksInflight.set(key, run);
@@ -340,7 +385,7 @@ export async function fetchStockQuoteSnapshot(
   if (pending) return pending;
 
   const run = (async () => {
-    const batches = chunk(uniq, 40);
+    const batches = chunk(uniq, 100);
     const results = await Promise.all(
       batches.map(async (batch) => fetchYahooQuoteBatch(batch))
     );
@@ -417,9 +462,15 @@ export async function fetchStockQuoteSnapshot(
       }
     }
     const finalRows = [...bySymbol.values()];
-    if (finalRows.length) {
-      quoteCache.set(key, { expiresAt: Date.now() + cacheTtlMs, rows: finalRows });
-      return finalRows;
+    const safeRows =
+      finalRows.length > 0
+        ? finalRows
+        : uniq
+            .map((symbol) => localFallbackRow(symbol))
+            .filter((row): row is StockMarketRow => Boolean(row));
+    if (safeRows.length) {
+      quoteCache.set(key, { expiresAt: Date.now() + cacheTtlMs, rows: safeRows });
+      return safeRows;
     }
     return cached?.rows ?? [];
   })();
