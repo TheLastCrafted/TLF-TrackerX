@@ -123,6 +123,21 @@ type FmpScreenerRow = {
   exchange?: string;
 };
 
+type YfinanceQuoteRow = {
+  symbol?: string;
+  name?: string;
+  price?: number | string;
+  previousClose?: number | string;
+  changePct?: number | string;
+  marketCap?: number | string;
+  volume?: number | string;
+  averageVolume?: number | string;
+  high24h?: number | string;
+  low24h?: number | string;
+  currency?: string;
+  exchange?: string;
+};
+
 const topStocksCache = new Map<string, { expiresAt: number; rows: StockMarketRow[] }>();
 const topStocksInflight = new Map<string, Promise<StockMarketRow[]>>();
 const quoteCache = new Map<string, { expiresAt: number; rows: StockMarketRow[] }>();
@@ -428,6 +443,63 @@ async function fetchFmpTopUniverse(count: number): Promise<StockMarketRow[]> {
   return rows.map(toFmpScreenerRow).filter((row): row is StockMarketRow => Boolean(row));
 }
 
+async function fetchYfinanceQuoteBatch(symbols: string[]): Promise<StockMarketRow[]> {
+  const uniq = Array.from(new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean)));
+  if (!uniq.length) return [];
+  const chunks: string[][] = [];
+  for (let i = 0; i < uniq.length; i += 80) chunks.push(uniq.slice(i, i + 80));
+  const settled = await Promise.allSettled(
+    chunks.map(async (batch) => {
+      const url = `/api/yfinance?symbols=${encodeURIComponent(batch.join(","))}`;
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!res.ok) return [] as StockMarketRow[];
+      const rows = (await res.json()) as YfinanceQuoteRow[];
+      if (!Array.isArray(rows)) return [] as StockMarketRow[];
+      const mapped: (StockMarketRow | null)[] = rows.map((row) => {
+          const symbol = String(row.symbol ?? "").trim().toUpperCase();
+          const price = asLooseNumber(row.price);
+          if (!symbol || !Number.isFinite(price)) return null;
+          const local = LOCAL_BY_SYMBOL.get(symbol);
+          const marketCap = asLooseNumber(row.marketCap);
+          const volume = asLooseNumber(row.volume);
+          const avgVolume = asLooseNumber(row.averageVolume);
+          const high24h = asLooseNumber(row.high24h);
+          const low24h = asLooseNumber(row.low24h);
+          const previousClose = asLooseNumber(row.previousClose);
+          const explicitChange = asLooseNumber(row.changePct);
+          const derivedChange =
+            Number.isFinite(previousClose) && previousClose > 0
+              ? ((price - previousClose) / previousClose) * 100
+              : NaN;
+          const quote: StockMarketRow = {
+            symbol,
+            name: String(row.name ?? local?.name ?? symbol).trim() || symbol,
+            kind: local?.kind === "etf" ? "etf" : "stock",
+            price,
+            changePct: Number.isFinite(explicitChange) ? explicitChange : Number.isFinite(derivedChange) ? derivedChange : 0,
+            marketCap: Number.isFinite(marketCap) ? marketCap : 0,
+            volume: Number.isFinite(volume) ? volume : 0,
+            averageVolume: Number.isFinite(avgVolume) ? avgVolume : undefined,
+            high24h: Number.isFinite(high24h) ? high24h : undefined,
+            low24h: Number.isFinite(low24h) ? low24h : undefined,
+            currency: row.currency || "USD",
+            exchange: row.exchange,
+            lastUpdatedAt: Date.now(),
+            logoUrl: stockLogoUrl(symbol),
+          };
+          return quote;
+        });
+      return mapped.filter((row): row is StockMarketRow => Boolean(row));
+    })
+  );
+  const merged = settled.flatMap((row) => (row.status === "fulfilled" ? row.value : []));
+  const bySymbol = new Map<string, StockMarketRow>();
+  for (const row of merged) {
+    if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
+  }
+  return [...bySymbol.values()];
+}
+
 async function fetchYahooQuoteBatch(symbols: string[]): Promise<StockMarketRow[]> {
   if (!symbols.length) return [];
   const uniq = Array.from(new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean)));
@@ -453,13 +525,20 @@ async function fetchYahooQuoteBatch(symbols: string[]): Promise<StockMarketRow[]
   return [...bySymbol.values()];
 }
 
+async function fetchYahooThenYfinanceQuoteBatch(symbols: string[]): Promise<StockMarketRow[]> {
+  const yahoo = await fetchYahooQuoteBatch(symbols);
+  if (yahoo.length) return yahoo;
+  if (!runtimeIsWeb()) return yahoo;
+  return fetchYfinanceQuoteBatch(symbols);
+}
+
 async function fetchYahooTopUniverseFromSeed(count: number): Promise<StockMarketRow[]> {
   const seedSymbols = FINANCIAL_ASSETS
     .filter((row) => row.kind === "stock" || row.kind === "etf")
     .map((row) => row.symbol.toUpperCase());
   const sample = seedSymbols.slice(0, Math.max(120, Math.min(240, count + 40)));
   if (!sample.length) return [];
-  const rows = await fetchYahooQuoteBatch(sample);
+  const rows = await fetchYahooThenYfinanceQuoteBatch(sample);
   if (!rows.length) return [];
   return rows.map((row) => {
     const meta = LOCAL_BY_SYMBOL.get(row.symbol);
@@ -585,7 +664,7 @@ export async function fetchStockQuoteSnapshot(
         const primaryRows = isWebRuntime
           ? preferFmpOnWeb
             ? await fetchFmpQuoteBatch(symbolsToFetch)
-            : await fetchYahooQuoteBatch(symbolsToFetch)
+            : await fetchYahooThenYfinanceQuoteBatch(symbolsToFetch)
           : await fetchYahooQuoteBatch(symbolsToFetch);
         for (const row of primaryRows) {
           const prev = bySymbol.get(row.symbol);
@@ -613,10 +692,10 @@ export async function fetchStockQuoteSnapshot(
         const secondaryTargets = isWebRuntime ? unresolvedAfterPrimary.slice(0, 35) : unresolvedAfterPrimary;
         const secondaryRows = isWebRuntime
           ? preferFmpOnWeb
-            ? await fetchYahooQuoteBatch(secondaryTargets)
+            ? await fetchYahooThenYfinanceQuoteBatch(secondaryTargets)
             : HAS_USABLE_FMP_KEY
               ? await fetchFmpQuoteBatch(secondaryTargets)
-              : []
+              : await fetchYfinanceQuoteBatch(secondaryTargets)
           : await fetchFmpQuoteBatch(secondaryTargets);
         for (const row of secondaryRows) {
           const prev = bySymbol.get(row.symbol);

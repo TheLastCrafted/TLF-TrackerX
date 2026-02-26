@@ -1,5 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "npx expo export -p web",
-  "outputDirectory": "dist"
+  "outputDirectory": "dist",
+  "functions": {
+    "api/http.js": {
+      "maxDuration": 15
+    },
+    "api/yfinance.py": {
+      "maxDuration": 20
+    }
+  }
 }

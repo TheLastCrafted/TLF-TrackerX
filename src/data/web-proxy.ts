@@ -11,21 +11,15 @@ export function withWebProxy(url: string): string {
 }
 
 export async function fetchWithWebProxy(input: string, init?: RequestInit): Promise<Response> {
-  if (isWebRuntime() && /^https:\/\/query[12]\.finance\.yahoo\.com\//i.test(input)) {
-    try {
-      const direct = await fetch(input, init);
-      if (direct.ok) return direct;
-    } catch {
-      // Fall through to proxy path.
-    }
-  }
+  const isWeb = isWebRuntime();
   const target = withWebProxy(input);
   if (target === input) return fetch(input, init);
   try {
     const proxied = await fetch(target, init);
     if (![404, 405].includes(proxied.status)) return proxied;
+    if (isWeb) return proxied;
   } catch {
-    // Fallback below.
+    if (isWeb) throw new Error("web_proxy_fetch_failed");
   }
   return fetch(input, init);
 }
