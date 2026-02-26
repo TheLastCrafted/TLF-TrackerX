@@ -55,7 +55,6 @@ export default function StocksScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
-  const [nextRefreshIn, setNextRefreshIn] = useState(0);
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("rank");
   const [sortDesc, setSortDesc] = useState(false);
@@ -235,7 +234,6 @@ export default function StocksScreen() {
     let alive = true;
     let inFlight = false;
     let backoffMs = 0;
-    let countdownTimer: ReturnType<typeof setInterval> | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const tick = async () => {
@@ -255,11 +253,9 @@ export default function StocksScreen() {
     void tick();
 
     if (!settings.autoRefresh) {
-      setNextRefreshIn(0);
       return () => {
         alive = false;
         if (timer) clearTimeout(timer);
-        if (countdownTimer) clearInterval(countdownTimer);
       };
     }
 
@@ -268,13 +264,7 @@ export default function StocksScreen() {
     const schedule = () => {
       if (!alive) return;
       const currentDelay = Math.max(baseDelayMs, backoffMs || baseDelayMs);
-      setNextRefreshIn(Math.floor(currentDelay / 1000));
-      countdownTimer = setInterval(() => setNextRefreshIn((v) => (v > 0 ? v - 1 : 0)), 1000);
       timer = setTimeout(async () => {
-        if (countdownTimer) {
-          clearInterval(countdownTimer);
-          countdownTimer = null;
-        }
         await tick();
         schedule();
       }, currentDelay);
@@ -285,7 +275,6 @@ export default function StocksScreen() {
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
-      if (countdownTimer) clearInterval(countdownTimer);
     };
   }, [load, refreshLiveQuotes, rows.length, settings.autoRefresh, settings.refreshSeconds]);
 
@@ -347,7 +336,6 @@ export default function StocksScreen() {
             </Text>
           </View>
           <View style={{ alignItems: "flex-end" }}>
-            <Text style={{ color: colors.subtext, fontSize: 12 }}>{settings.autoRefresh ? `${nextRefreshIn}s` : t("manual", "manuell")}</Text>
             <Text style={{ color: colors.subtext, fontSize: 11 }}>
               {formatMoney(marketCap, settings.currency, true, settings.language)}
             </Text>
@@ -382,11 +370,7 @@ export default function StocksScreen() {
           <View>
             <TabHeader
               title={t("Stocks", "Aktien")}
-              subtitle={
-                settings.autoRefresh
-                  ? `${t("Auto refresh in", "Auto-Aktualisierung in")} ${nextRefreshIn}s`
-                  : t("Manual refresh", "Manuelle Aktualisierung")
-              }
+              subtitle={t("Live updates in background", "Live-Updates im Hintergrund")}
             />
 
             <View style={{ paddingHorizontal: SCREEN_HORIZONTAL_PADDING }}>
