@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "expo-router";
 import { Animated, LayoutAnimation, Platform, ScrollView, Text, UIManager, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { useIsFocused } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useFinanceTools } from "../../src/state/finance-tools";
@@ -66,6 +67,7 @@ export default function ToolsHomeScreen() {
   const colors = useAppColors();
   const { t } = useI18n();
   const { settings } = useSettings();
+  const isFocused = useIsFocused();
   const { holdings, budgets, expenses, incomes } = useFinanceTools();
   const [showWidgetPicker, setShowWidgetPicker] = useState(false);
   const [editingLayout, setEditingLayout] = useState(false);
@@ -91,6 +93,7 @@ export default function ToolsHomeScreen() {
   const resolvedLiveRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    if (!isFocused) return;
     let alive = true;
     const poll = async () => {
       const mappedIds = holdings
@@ -147,9 +150,10 @@ export default function ToolsHomeScreen() {
       alive = false;
       clearInterval(timer);
     };
-  }, [holdings, settings.currency]);
+  }, [holdings, isFocused, settings.currency]);
 
   useEffect(() => {
+    if (!isFocused) return;
     let alive = true;
     const poll = async () => {
       const nonCrypto = holdings.filter((h) => h.kind !== "crypto");
@@ -205,7 +209,7 @@ export default function ToolsHomeScreen() {
       alive = false;
       clearInterval(timer);
     };
-  }, [holdings]);
+  }, [holdings, isFocused]);
 
   useEffect(() => {
     if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -357,6 +361,7 @@ export default function ToolsHomeScreen() {
     { label: "Strategy", icon: "functions", route: "/strategy", tint: "#79B9FF" },
     { label: "Budget", icon: "account-balance-wallet", route: "/budget", tint: "#6FD6C8" },
     { label: "Cashflow", icon: "bar-chart", route: "/cashflow", tint: "#8EC8FF" },
+    { label: "Debt", icon: "credit-card", route: "/debt", tint: "#FF97B2" },
   ] as const;
 
   const toggleWidget = (id: PersonalWidgetId) => {

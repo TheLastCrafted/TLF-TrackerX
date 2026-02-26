@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "expo-router";
 import { Image, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { useIsFocused } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { fetchNewsByCategory, NewsArticle, NewsCategory } from "../../src/data/news";
@@ -25,6 +26,7 @@ export default function NewsScreen() {
   const colors = useAppColors();
   const { saveMany } = useNewsStore();
   const { t, language } = useI18n();
+  const isFocused = useIsFocused();
   const categories: { id: NewsCategory; label: string }[] = [
     { id: "global", label: t("Global", "Global") },
     { id: "stocks", label: t("Stocks", "Aktien") },
@@ -60,6 +62,7 @@ export default function NewsScreen() {
   }, [category, saveMany]);
 
   useEffect(() => {
+    if (!isFocused) return;
     void run();
     const timer = setInterval(() => {
       void run();
@@ -68,7 +71,7 @@ export default function NewsScreen() {
     return () => {
       clearInterval(timer);
     };
-  }, [run]);
+  }, [isFocused, run]);
 
   const onManualRefresh = useCallback(async () => {
     setManualRefreshing(true);

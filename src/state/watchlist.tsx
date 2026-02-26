@@ -76,7 +76,11 @@ export function WatchlistProvider(props: { children: ReactNode }) {
               })
             : Promise.resolve([]),
           equitySymbols.length
-            ? fetchStockQuoteSnapshot(equitySymbols, { useCache: preferCache, cacheTtlMs: preferCache ? 45_000 : 10_000 })
+            ? fetchStockQuoteSnapshot(equitySymbols, {
+                useCache: preferCache,
+                cacheTtlMs: preferCache ? 45_000 : 10_000,
+                enrich: false,
+              })
             : Promise.resolve([]),
         ]);
       } catch {
@@ -89,7 +93,7 @@ export function WatchlistProvider(props: { children: ReactNode }) {
     void tick();
     timer = setInterval(() => {
       void tick();
-    }, Platform.OS === "web" ? 120_000 : 45_000);
+    }, Platform.OS === "web" ? 180_000 : 45_000);
 
     return () => {
       alive = false;

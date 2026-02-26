@@ -39,6 +39,7 @@ export function TabHeader(props: {
     Strategy: "functions",
     Budget: "account-balance-wallet",
     Cashflow: "bar-chart",
+    Debt: "credit-card",
     Research: "menu-book",
     News: "article",
     "Personal Hub": "dashboard",

@@ -3,6 +3,7 @@ import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, FlatList, Image, Platform, Pressable, RefreshControl, Text, TextInput, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { useIsFocused } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { searchUniversalAssets, UniversalAsset } from "../../src/data/asset-search";
@@ -54,6 +55,7 @@ export default function StocksScreen() {
   const colors = useAppColors();
   const { addAlert } = usePriceAlerts();
   const { t } = useI18n();
+  const isFocused = useIsFocused();
 
   const [rows, setRows] = useState<StockMarketRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,14 +72,15 @@ export default function StocksScreen() {
   const [failedLogos, setFailedLogos] = useState<Record<string, true>>({});
   const listRef = useRef<FlatList<StockMarketRow>>(null);
   const pollCounterRef = useRef(0);
+  const rowsRef = useRef<StockMarketRow[]>([]);
+  const rowSymbolsRef = useRef<string[]>([]);
+  const loadRef = useRef<((isManualRefresh?: boolean) => Promise<boolean>) | null>(null);
+  const refreshLiveRef = useRef<(() => Promise<boolean>) | null>(null);
   const rowSymbolsKey = useMemo(
     () => rows.map((row) => row.symbol).sort().join("|"),
     [rows]
   );
-  const rowSymbols = useMemo(
-    () => (rowSymbolsKey ? rowSymbolsKey.split("|").filter(Boolean) : []),
-    [rowSymbolsKey]
-  );
+  const rowSymbolSet = useMemo(() => new Set(rowSymbolsKey ? rowSymbolsKey.split("|").filter(Boolean) : []), [rowSymbolsKey]);
 
   useLogoScrollToTop(() => {
     listRef.current?.scrollToOffset({ offset: 0, animated: true });
@@ -93,27 +96,58 @@ export default function StocksScreen() {
     return map;
   }, [rows]);
 
+  useEffect(() => {
+    rowsRef.current = rows;
+    rowSymbolsRef.current = rows.map((row) => row.symbol).sort();
+  }, [rows]);
+
   const mergeRows = useCallback((incoming: StockMarketRow[]) => {
     setRows((prev) => {
+      if (!incoming.length) return prev;
       const bySymbol = new Map(prev.map((row) => [row.symbol, row]));
-      for (const row of incoming) bySymbol.set(row.symbol, row);
-      return [...bySymbol.values()];
+      let changed = false;
+      for (const row of incoming) {
+        const existing = bySymbol.get(row.symbol);
+        if (!existing) {
+          bySymbol.set(row.symbol, row);
+          changed = true;
+          continue;
+        }
+        const isSame =
+          existing.name === row.name &&
+          existing.kind === row.kind &&
+          existing.price === row.price &&
+          existing.changePct === row.changePct &&
+          existing.marketCap === row.marketCap &&
+          existing.volume === row.volume &&
+          existing.averageVolume === row.averageVolume &&
+          existing.high24h === row.high24h &&
+          existing.low24h === row.low24h &&
+          existing.currency === row.currency &&
+          existing.exchange === row.exchange &&
+          existing.logoUrl === row.logoUrl;
+        if (isSame) continue;
+        bySymbol.set(row.symbol, row);
+        changed = true;
+      }
+      return changed ? [...bySymbol.values()] : prev;
     });
   }, []);
 
   const refreshLiveQuotes = useCallback(async (): Promise<boolean> => {
-    const symbols = rowSymbols.slice(0, Platform.OS === "web" ? 90 : 230);
+    const symbols = rowSymbolsRef.current.slice(0, Platform.OS === "web" ? 90 : 230);
     if (!symbols.length) return false;
     try {
       const live = await fetchStockQuoteSnapshot(symbols, {
         useCache: true,
         cacheTtlMs: Platform.OS === "web" ? 25_000 : 8_000,
+        enrich: false,
       });
       if (!live.length) return false;
       const bySymbol = new Map(live.map((row) => [row.symbol, row]));
       let changed = false;
-      setRows((prev) =>
-        prev.map((row) => {
+      setRows((prev) => {
+        const nextRows = prev.map((row) => {
           const quote = bySymbol.get(row.symbol);
           if (!quote) return row;
           const nextPrice = Number.isFinite(quote.price) ? quote.price : row.price;
@@ -150,15 +184,16 @@ export default function StocksScreen() {
             exchange: nextExchange,
             lastUpdatedAt: Date.now(),
           };
-        })
-      );
+        });
+        return changed ? nextRows : prev;
+      });
       if (changed) setLastUpdatedAt(Date.now());
       setError(null);
       return true;
     } catch {
       return false;
     }
-  }, [rowSymbols]);
+  }, []);
 
   const load = useCallback(
     async (isManualRefresh = false): Promise<boolean> => {
@@ -183,7 +218,7 @@ export default function StocksScreen() {
             "Live-Aktienanbieter ist aktuell limitiert. Es werden Fallback-Daten angezeigt."
           )
         );
-        return fallbackRows.length > 0 || rows.length > 0;
+        return fallbackRows.length > 0 || rowsRef.current.length > 0;
       } catch {
         const fallbackRows = getLocalStockFallbackRows(200);
         if (fallbackRows.length) {
@@ -196,14 +231,22 @@ export default function StocksScreen() {
             "Live-Aktienanbieter ist aktuell limitiert. Es werden Fallback-Daten angezeigt."
           )
         );
-        return fallbackRows.length > 0 || rows.length > 0;
+        return fallbackRows.length > 0 || rowsRef.current.length > 0;
       } finally {
         setLoading(false);
         setRefreshing(false);
       }
     },
-    [rows.length, t]
+    [t]
   );
+
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
+  useEffect(() => {
+    refreshLiveRef.current = refreshLiveQuotes;
+  }, [refreshLiveQuotes]);
 
   useEffect(() => {
     const q = search.trim();
@@ -231,13 +274,13 @@ export default function StocksScreen() {
   useEffect(() => {
     const missing = remoteSearchRows
       .map((row) => row.symbol.toUpperCase())
-      .filter((symbol) => symbol && !rows.some((r) => r.symbol === symbol))
+      .filter((symbol) => symbol && !rowSymbolSet.has(symbol))
       .slice(0, 24);
     if (!missing.length) return;
     let alive = true;
     (async () => {
       try {
-        const live = await fetchStockQuoteSnapshot(missing, { useCache: true, cacheTtlMs: 25_000 });
+        const live = await fetchStockQuoteSnapshot(missing, { useCache: true, cacheTtlMs: 25_000, enrich: false });
         if (!alive || !live.length) return;
         const bySymbol = new Map(remoteSearchRows.map((row) => [row.symbol.toUpperCase(), row]));
         mergeRows(
@@ -256,9 +299,10 @@ export default function StocksScreen() {
     return () => {
       alive = false;
     };
-  }, [remoteSearchRows, rows, mergeRows]);
+  }, [remoteSearchRows, rowSymbolSet, mergeRows]);
 
   useEffect(() => {
+    if (!isFocused) return;
     let alive = true;
     let inFlight = false;
     let backoffMs = 0;
@@ -269,8 +313,13 @@ export default function StocksScreen() {
       inFlight = true;
       try {
         pollCounterRef.current += 1;
-        const shouldRunFull = rows.length === 0 || pollCounterRef.current % 7 === 0;
-        const ok = shouldRunFull ? await load(false) : await refreshLiveQuotes();
+        const shouldRunFull =
+          Platform.OS === "web"
+            ? rowsRef.current.length === 0 || pollCounterRef.current % 2 === 0
+            : rowsRef.current.length === 0 || pollCounterRef.current % 7 === 0;
+        const ok = shouldRunFull
+          ? await (loadRef.current ? loadRef.current(false) : Promise.resolve(false))
+          : await (refreshLiveRef.current ? refreshLiveRef.current() : Promise.resolve(false));
         if (ok) backoffMs = 0;
         else backoffMs = Math.min(backoffMs ? backoffMs * 2 : 5000, 20_000);
       } finally {
@@ -287,7 +336,7 @@ export default function StocksScreen() {
       };
     }
 
-    const baseDelayMs = Math.max(Platform.OS === "web" ? 20 : 6, settings.refreshSeconds) * 1000;
+    const baseDelayMs = Math.max(Platform.OS === "web" ? 45 : 6, settings.refreshSeconds) * 1000;
 
     const schedule = () => {
       if (!alive) return;
@@ -304,7 +353,7 @@ export default function StocksScreen() {
       alive = false;
       if (timer) clearTimeout(timer);
     };
-  }, [load, refreshLiveQuotes, rows.length, settings.autoRefresh, settings.refreshSeconds]);
+  }, [isFocused, settings.autoRefresh, settings.refreshSeconds]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -384,7 +433,11 @@ export default function StocksScreen() {
               void (async () => {
                 setRefreshing(true);
                 try {
-                  await Promise.all([refreshLiveQuotes(), load(true)]);
+                  if (Platform.OS === "web") {
+                    await load(true);
+                  } else {
+                    await Promise.all([refreshLiveQuotes(), load(true)]);
+                  }
                 } finally {
                   setRefreshing(false);
                 }

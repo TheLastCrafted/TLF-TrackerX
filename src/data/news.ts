@@ -1,3 +1,5 @@
+import { fetchWithWebProxy } from "./web-proxy";
+
 export type NewsCategory = "crypto" | "global" | "stocks" | "macro";
 
 export type NewsArticle = {
@@ -296,7 +298,7 @@ function isLikelyPaywalled(url: string, title: string): boolean {
 }
 
 async function fetchReddit(url: string): Promise<RedditChild[]> {
-  const res = await fetch(url, {
+  const res = await fetchWithWebProxy(url, {
     headers: {
       Accept: "application/json",
       "User-Agent": "tlf-trackerx/1.0",
@@ -309,7 +311,7 @@ async function fetchReddit(url: string): Promise<RedditChild[]> {
 
 async function fetchHn(query: string, category: NewsCategory): Promise<NewsArticle[]> {
   const url = `https://hn.algolia.com/api/v1/search_by_date?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=30`;
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  const res = await fetchWithWebProxy(url, { headers: { Accept: "application/json" } });
   if (!res.ok) return [];
   const json = (await res.json()) as HnResponse;
   return (json.hits ?? [])

@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocalSearchParams } from "expo-router";
-import { Image, ScrollView, Text, View } from "react-native";
+import { Image, Linking, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { WebView } from "react-native-webview";
 
 import { translateRuntimeText } from "../../src/i18n/runtime-translation";
 import { useNewsStore } from "../../src/state/news";
@@ -117,9 +116,53 @@ export default function NewsDetailScreen() {
         </Text>
       </View>
 
-      <View style={{ marginTop: 10, height: 1100, borderRadius: 12, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
-        <WebView source={{ uri: article.link }} startInLoadingState />
-      </View>
+      {Platform.OS === "web" ? (
+        <View style={{ marginTop: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12 }}>
+          <Text style={{ color: colors.subtext, marginBottom: 8 }}>
+            {t(
+              "Full article preview on web may be blocked by publisher policies. Use open article to view directly.",
+              "Die Vollansicht kann im Web durch Publisher-Richtlinien blockiert sein. Oeffne den Artikel direkt."
+            )}
+          </Text>
+          <Pressable
+            onPress={() => {
+              void Linking.openURL(article.link);
+            }}
+            style={({ pressed }) => ({
+              borderRadius: 999,
+              borderWidth: 1,
+              borderColor: colors.accentBorder,
+              backgroundColor: pressed ? colors.accentSoft : colors.surfaceAlt,
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              alignSelf: "flex-start",
+            })}
+          >
+            <Text style={{ color: colors.accent, fontWeight: "800" }}>
+              {t("Open full article", "Vollstaendigen Artikel oeffnen")}
+            </Text>
+          </Pressable>
+          <View style={{ marginTop: 10, height: 560, borderRadius: 10, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+            {/* Web fallback iframe for publishers that allow embedding */}
+            <iframe
+              src={article.link}
+              title={article.title}
+              style={{ width: "100%", height: "100%", border: "none" }}
+              sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+            />
+          </View>
+        </View>
+      ) : (
+        (() => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const NativeWebView = require("react-native-webview").WebView as any;
+          return (
+            <View style={{ marginTop: 10, height: 1100, borderRadius: 12, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+              <NativeWebView source={{ uri: article.link }} startInLoadingState />
+            </View>
+          );
+        })()
+      )}
     </ScrollView>
   );
 }

@@ -166,9 +166,9 @@ export default function WatchlistScreen() {
               [] as CoinMarket[]
             )
           : Promise.resolve([]),
-        equitySymbols.length
-          ? withTimeout(
-              fetchStockQuoteSnapshot(equitySymbols, { useCache: true, cacheTtlMs: 20_000 }),
+          equitySymbols.length
+            ? withTimeout(
+              fetchStockQuoteSnapshot(equitySymbols, { useCache: true, cacheTtlMs: 20_000, enrich: false }),
               4_000,
               [] as StockMarketRow[]
             )
@@ -217,7 +217,7 @@ export default function WatchlistScreen() {
               )
             : Promise.resolve([]),
           equitySymbols.length
-            ? withTimeout(fetchStockQuoteSnapshot(equitySymbols, { useCache: false }), 8_000, [] as StockMarketRow[])
+            ? withTimeout(fetchStockQuoteSnapshot(equitySymbols, { useCache: false, enrich: false }), 8_000, [] as StockMarketRow[])
             : Promise.resolve([]),
         ]);
         const topFresh =

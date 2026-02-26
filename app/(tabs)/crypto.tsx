@@ -1,7 +1,8 @@
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, FlatList, Image, Pressable, RefreshControl, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, Image, Platform, Pressable, RefreshControl, Text, TextInput, View } from "react-native";
+import { useIsFocused } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { TRACKED_COINS, TRACKED_COINS_BY_ID } from "../../src/catalog/coins";
@@ -49,6 +50,7 @@ export default function CryptoScreen() {
   const colors = useAppColors();
   const { addAlert } = usePriceAlerts();
   const { t } = useI18n();
+  const isFocused = useIsFocused();
 
   const [marketRows, setMarketRows] = useState<CoinMarket[]>([]);
   const [loading, setLoading] = useState(true);
@@ -64,6 +66,10 @@ export default function CryptoScreen() {
   const [remoteSearchRows, setRemoteSearchRows] = useState<UniversalAsset[]>([]);
   const listRef = useRef<FlatList<CoinMarket>>(null);
   const pollCounterRef = useRef(0);
+  const marketRowsRef = useRef<CoinMarket[]>([]);
+  const marketIdsRef = useRef<string[]>([]);
+  const loadRef = useRef<((isManualRefresh?: boolean) => Promise<boolean>) | null>(null);
+  const refreshLiveRef = useRef<(() => Promise<boolean>) | null>(null);
   const marketIdsKey = useMemo(
     () => marketRows.map((row) => row.id).sort().join("|"),
     [marketRows]
@@ -72,16 +78,17 @@ export default function CryptoScreen() {
     () => new Set(marketIdsKey ? marketIdsKey.split("|") : []),
     [marketIdsKey]
   );
-  const marketIds = useMemo(
-    () => (marketIdsKey ? marketIdsKey.split("|").filter(Boolean) : []),
-    [marketIdsKey]
-  );
+
+  useEffect(() => {
+    marketRowsRef.current = marketRows;
+    marketIdsRef.current = marketRows.map((row) => row.id).sort();
+  }, [marketRows]);
   useLogoScrollToTop(() => {
     listRef.current?.scrollToOffset({ offset: 0, animated: true });
   });
 
   const refreshLivePrices = useCallback(async (): Promise<boolean> => {
-    const ids = marketIds.slice(0, 220);
+    const ids = marketIdsRef.current.slice(0, 220);
     if (!ids.length) return false;
     try {
       const quotes = await fetchCoinGeckoSimplePrices({
@@ -93,8 +100,8 @@ export default function CryptoScreen() {
       if (!Object.keys(quotes).length) return false;
       const nowIso = new Date().toISOString();
       let changed = false;
-      setMarketRows((prev) =>
-        prev.map((row) => {
+      setMarketRows((prev) => {
+        const nextRows = prev.map((row) => {
           const q = quotes[row.id];
           if (!q) return row;
           const nextPrice = Number.isFinite(q.current_price) ? Number(q.current_price) : row.current_price;
@@ -118,15 +125,16 @@ export default function CryptoScreen() {
             price_change_percentage_24h: nextChg,
             last_updated: nowIso,
           };
-        })
-      );
+        });
+        return changed ? nextRows : prev;
+      });
       if (changed) setLastUpdatedAt(Date.now());
       setError(null);
       return true;
     } catch {
       return false;
     }
-  }, [marketIds, settings.currency]);
+  }, [settings.currency]);
 
   const load = useCallback(
     async (isManualRefresh = false): Promise<boolean> => {
@@ -171,7 +179,7 @@ export default function CryptoScreen() {
         }
 
         setError(t("Could not update prices. CoinGecko may be rate limiting right now.", "Preise konnten nicht aktualisiert werden. CoinGecko limitiert eventuell aktuell."));
-        return marketRows.length > 0;
+        return marketRowsRef.current.length > 0;
       } catch {
         try {
           const fallback = await fetchCoinGeckoMarkets({
@@ -193,14 +201,22 @@ export default function CryptoScreen() {
           }
         } catch {}
         setError(t("Could not update prices. CoinGecko may be rate limiting right now.", "Preise konnten nicht aktualisiert werden. CoinGecko limitiert eventuell aktuell."));
-        return marketRows.length > 0;
+        return marketRowsRef.current.length > 0;
       } finally {
         setLoading(false);
         setRefreshing(false);
       }
     },
-    [settings.currency, t, marketRows.length]
+    [settings.currency, t]
   );
+
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
+  useEffect(() => {
+    refreshLiveRef.current = refreshLivePrices;
+  }, [refreshLivePrices]);
 
   useEffect(() => {
     const q = search.trim();
@@ -256,6 +272,7 @@ export default function CryptoScreen() {
   }, [remoteSearchRows, settings.currency, marketIdSet]);
 
   useEffect(() => {
+    if (!isFocused) return;
     let alive = true;
     let inFlight = false;
     let backoffMs = 0;
@@ -265,8 +282,13 @@ export default function CryptoScreen() {
       inFlight = true;
       try {
         pollCounterRef.current += 1;
-        const shouldRunFull = marketRows.length === 0 || pollCounterRef.current % 6 === 0;
-        const ok = shouldRunFull ? await load(false) : await refreshLivePrices();
+        const shouldRunFull =
+          Platform.OS === "web"
+            ? marketRowsRef.current.length === 0 || pollCounterRef.current % 3 === 0
+            : marketRowsRef.current.length === 0 || pollCounterRef.current % 6 === 0;
+        const ok = shouldRunFull
+          ? await (loadRef.current ? loadRef.current(false) : Promise.resolve(false))
+          : await (refreshLiveRef.current ? refreshLiveRef.current() : Promise.resolve(false));
         if (ok) backoffMs = 0;
         else backoffMs = Math.min(backoffMs ? backoffMs * 2 : 5000, 15000);
       } finally {
@@ -282,7 +304,7 @@ export default function CryptoScreen() {
       };
     }
 
-    const baseDelayMs = Math.max(5, settings.refreshSeconds) * 1000;
+    const baseDelayMs = Math.max(Platform.OS === "web" ? 20 : 5, settings.refreshSeconds) * 1000;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const schedule = () => {
@@ -300,7 +322,7 @@ export default function CryptoScreen() {
       alive = false;
       if (timer) clearTimeout(timer);
     };
-  }, [load, marketRows.length, refreshLivePrices, settings.autoRefresh, settings.refreshSeconds]);
+  }, [isFocused, settings.autoRefresh, settings.refreshSeconds]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();

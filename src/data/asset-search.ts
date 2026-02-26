@@ -8,7 +8,7 @@ export type UniversalAsset = {
   symbol: string;
   name: string;
   kind: SearchAssetKind;
-  source: "coingecko" | "yahoo" | "local";
+  source: "coingecko" | "yahoo" | "fmp" | "local";
   exchange?: string;
   currency?: string;
   coinGeckoId?: string;
@@ -37,8 +37,24 @@ type CoinGeckoSearchResponse = {
   }[];
 };
 
+type FmpSearchRow = {
+  symbol?: string;
+  name?: string;
+  stockExchange?: string;
+  exchangeShortName?: string;
+  currency?: string;
+};
+
 const cgSearchCache = new Map<string, { expiresAt: number; rows: UniversalAsset[] }>();
 let lastCoinGeckoSearchAt = 0;
+const FMP_API_KEY =
+  (typeof process !== "undefined" &&
+    (process.env.EXPO_PUBLIC_FMP_API_KEY || process.env.FMP_API_KEY)) ||
+  "demo";
+
+function runtimeIsWeb(): boolean {
+  return typeof window !== "undefined" && typeof document !== "undefined";
+}
 
 function normalizeYahooType(quoteType?: string, nameHint?: string): SearchAssetKind | null {
   const name = (nameHint ?? "").toUpperCase();
@@ -128,6 +144,40 @@ async function searchCoinGecko(query: string, limit: number): Promise<UniversalA
   return rows;
 }
 
+function normalizeFmpKind(nameHint?: string): SearchAssetKind {
+  const up = String(nameHint ?? "").toUpperCase();
+  if (up.includes(" ETF") || up.includes("EXCHANGE TRADED FUND") || up.includes(" TRUST")) return "etf";
+  return "stock";
+}
+
+async function searchFmp(query: string, limit: number): Promise<UniversalAsset[]> {
+  const url = `https://financialmodelingprep.com/api/v3/search?query=${encodeURIComponent(query)}&limit=${Math.max(10, limit)}&apikey=${encodeURIComponent(FMP_API_KEY)}`;
+  const res = await fetchWithWebProxy(url, {
+    headers: {
+      Accept: "application/json",
+    },
+  });
+  if (!res.ok) return [];
+  const data = (await res.json()) as FmpSearchRow[];
+  if (!Array.isArray(data)) return [];
+  const rows: UniversalAsset[] = [];
+  for (const row of data) {
+    const symbol = String(row.symbol ?? "").trim().toUpperCase();
+    if (!symbol) continue;
+    const name = String(row.name ?? symbol).trim() || symbol;
+    rows.push({
+      id: `fmp:${symbol}:${row.exchangeShortName ?? ""}`,
+      symbol,
+      name,
+      kind: normalizeFmpKind(name),
+      source: "fmp",
+      exchange: row.stockExchange || row.exchangeShortName || undefined,
+      currency: row.currency || undefined,
+    });
+  }
+  return rows.slice(0, limit);
+}
+
 export async function searchUniversalAssets(query: string, limit = 24): Promise<UniversalAsset[]> {
   const q = query.trim();
   if (!q) return [];
@@ -150,10 +200,12 @@ export async function searchUniversalAssets(query: string, limit = 24): Promise<
       lastPrice: asset.defaultPrice,
     }));
 
-  const [yahooRows, cryptoRows] = await Promise.allSettled([searchYahoo(q, limit), searchCoinGecko(q, limit)]);
+  const yahooTask = runtimeIsWeb() ? Promise.resolve([] as UniversalAsset[]) : searchYahoo(q, limit);
+  const [yahooRows, cryptoRows, fmpRows] = await Promise.allSettled([yahooTask, searchCoinGecko(q, limit), searchFmp(q, limit)]);
   const merged = [
     ...localRows,
     ...(yahooRows.status === "fulfilled" ? yahooRows.value : []),
+    ...(fmpRows.status === "fulfilled" ? fmpRows.value : []),
     ...(cryptoRows.status === "fulfilled" ? cryptoRows.value : []),
   ];
 

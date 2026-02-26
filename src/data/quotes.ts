@@ -1,4 +1,5 @@
 import { fetchWithWebProxy } from "./web-proxy";
+import { fetchStockQuoteSnapshot } from "./stocks-live";
 
 export type QuoteRow = {
   symbol: string;
@@ -44,10 +45,23 @@ type YahooQuoteResponse = {
   };
 };
 
+type FmpHistoricalResponse = {
+  symbol?: string;
+  historical?: { date?: string; close?: number | string }[];
+};
+
 const quoteCache = new Map<string, { expiresAt: number; data: QuoteRow[] }>();
 const quoteInflight = new Map<string, Promise<QuoteRow[]>>();
 const seriesCache = new Map<string, { expiresAt: number; data: QuoteSeriesPoint[] }>();
 const seriesInflight = new Map<string, Promise<QuoteSeriesPoint[]>>();
+const FMP_API_KEY =
+  (typeof process !== "undefined" &&
+    (process.env.EXPO_PUBLIC_FMP_API_KEY || process.env.FMP_API_KEY)) ||
+  "demo";
+
+function runtimeIsWeb(): boolean {
+  return typeof window !== "undefined" && typeof document !== "undefined";
+}
 
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -113,6 +127,39 @@ async function fetchYahooChartPoint(symbol: string): Promise<QuoteRow | null> {
   }
 }
 
+async function fetchFmpSeries(symbol: string, days: number): Promise<QuoteSeriesPoint[]> {
+  const key = toYahooSymbol(symbol).replace("-", ".");
+  if (!key) return [];
+  const timeseries = Math.max(40, Math.min(5000, Math.ceil(days * 1.4)));
+  const url =
+    `https://financialmodelingprep.com/api/v3/historical-price-full/${encodeURIComponent(key)}` +
+    `?timeseries=${timeseries}&apikey=${encodeURIComponent(FMP_API_KEY)}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetchWithWebProxy(url, { headers: { Accept: "application/json" }, signal: ctrl.signal });
+    if (!res.ok) return [];
+    const json = (await res.json()) as FmpHistoricalResponse;
+    const rows = Array.isArray(json.historical) ? json.historical : [];
+    const out: QuoteSeriesPoint[] = rows
+      .map((row) => {
+        const ts = row.date ? Date.parse(`${row.date}T00:00:00Z`) : NaN;
+        const price = typeof row.close === "number" ? row.close : Number(row.close);
+        return { x: ts, y: price };
+      })
+      .filter((row) => Number.isFinite(row.x) && Number.isFinite(row.y))
+      .sort((a, b) => a.x - b.x);
+    if (!out.length) return [];
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    const filtered = out.filter((p) => p.x >= cutoff);
+    return filtered.length >= 2 ? filtered : out;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function fetchYahooSeries(symbol: string, days = 365): Promise<QuoteSeriesPoint[]> {
   const s = toYahooSymbol(symbol);
   if (!s) return [];
@@ -121,6 +168,22 @@ export async function fetchYahooSeries(symbol: string, days = 365): Promise<Quot
   if (cached && Date.now() <= cached.expiresAt) return cached.data;
   const pending = seriesInflight.get(cacheKey);
   if (pending) return pending;
+  if (runtimeIsWeb()) {
+    const runWeb = (async () => {
+      const fmpSeries = await fetchFmpSeries(s, days);
+      if (fmpSeries.length) {
+        seriesCache.set(cacheKey, { expiresAt: Date.now() + 2 * 60_000, data: fmpSeries });
+        return fmpSeries;
+      }
+      return cached?.data ?? [];
+    })();
+    seriesInflight.set(cacheKey, runWeb);
+    try {
+      return await runWeb;
+    } finally {
+      seriesInflight.delete(cacheKey);
+    }
+  }
   const range = days <= 30 ? "1mo" : days <= 90 ? "3mo" : days <= 180 ? "6mo" : days <= 365 ? "1y" : days <= 1825 ? "5y" : "10y";
   const url =
     `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(s)}` +
@@ -171,6 +234,29 @@ export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteRow[]> {
   if (cached && Date.now() <= cached.expiresAt) return cached.data;
   const pending = quoteInflight.get(cacheKey);
   if (pending) return pending;
+  if (runtimeIsWeb()) {
+    const runWeb = (async () => {
+      const rows = await fetchStockQuoteSnapshot(originals, { useCache: true, cacheTtlMs: 30_000, enrich: false });
+      const mapped: QuoteRow[] = rows
+        .filter((row) => Number.isFinite(row.price))
+        .map((row) => ({
+          symbol: row.symbol,
+          price: row.price,
+          previousClose: undefined,
+          changePct: Number.isFinite(row.changePct) ? row.changePct : undefined,
+          currency: row.currency,
+          exchange: row.exchange,
+        }));
+      quoteCache.set(cacheKey, { expiresAt: Date.now() + 30_000, data: mapped });
+      return mapped;
+    })();
+    quoteInflight.set(cacheKey, runWeb);
+    try {
+      return await runWeb;
+    } finally {
+      quoteInflight.delete(cacheKey);
+    }
+  }
 
   const normalizedToOriginal = new Map<string, string>();
   const requestSymbols = Array.from(
@@ -208,7 +294,29 @@ export async function fetchYahooQuotes(symbols: string[]): Promise<QuoteRow[]> {
 
     const uniqueBySymbol = new Map<string, QuoteRow>();
     for (const row of remapped) uniqueBySymbol.set(row.symbol.toUpperCase(), row);
-    const finalRows = Array.from(uniqueBySymbol.values());
+    let finalRows = Array.from(uniqueBySymbol.values());
+    if (finalRows.length < originals.length) {
+      try {
+        const fallbackRows = await fetchStockQuoteSnapshot(originals, { useCache: true, enrich: false });
+        if (fallbackRows.length) {
+          for (const row of fallbackRows) {
+            const key = row.symbol.toUpperCase();
+            if (uniqueBySymbol.has(key)) continue;
+            uniqueBySymbol.set(key, {
+              symbol: row.symbol,
+              price: row.price,
+              previousClose: undefined,
+              changePct: row.changePct,
+              currency: row.currency,
+              exchange: row.exchange,
+            });
+          }
+          finalRows = Array.from(uniqueBySymbol.values());
+        }
+      } catch {
+        // keep primary rows
+      }
+    }
     quoteCache.set(cacheKey, { expiresAt: Date.now() + 30_000, data: finalRows });
     return finalRows;
   })();

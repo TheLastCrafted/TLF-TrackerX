@@ -4,12 +4,19 @@ const ALLOWED_HOSTS = new Set([
   "api.coingecko.com",
   "fred.stlouisfed.org",
   "api.binance.com",
+  "financialmodelingprep.com",
+  "api.financialmodelingprep.com",
+  "www.reddit.com",
+  "reddit.com",
+  "hn.algolia.com",
 ]);
 
 const MAX_CACHE_ENTRIES = 400;
 const responseCache = new Map();
 const inflight = new Map();
 const hostCooldownUntil = new Map();
+const hostNextAllowedAt = new Map();
+const YAHOO_MIN_GAP_MS = 1200;
 
 function pickFirst(value) {
   if (Array.isArray(value)) return value[0] ?? "";
@@ -42,6 +49,9 @@ function getTtlsForTarget(target) {
   if (host === "api.coingecko.com") return { freshMs: 15_000, staleMs: 15 * 60_000 };
   if (host === "fred.stlouisfed.org") return { freshMs: 60_000, staleMs: 60 * 60_000 };
   if (host === "api.binance.com") return { freshMs: 8_000, staleMs: 3 * 60_000 };
+  if (host.includes("financialmodelingprep.com")) return { freshMs: 25_000, staleMs: 20 * 60_000 };
+  if (host.endsWith("reddit.com")) return { freshMs: 45_000, staleMs: 20 * 60_000 };
+  if (host === "hn.algolia.com") return { freshMs: 45_000, staleMs: 20 * 60_000 };
   return { freshMs: 15_000, staleMs: 5 * 60_000 };
 }
 
@@ -66,6 +76,18 @@ function sendCached(res, cached, reason) {
   res.status(200).send(cached.body);
 }
 
+function setSyntheticJsonCache(cacheKey, body, freshMs, staleMs) {
+  const ts = now();
+  responseCache.set(cacheKey, {
+    body,
+    contentType: "application/json; charset=utf-8",
+    updatedAt: ts,
+    freshUntil: ts + freshMs,
+    staleUntil: ts + staleMs,
+  });
+  trimCacheIfNeeded();
+}
+
 function isYahooHost(host) {
   return host === "query1.finance.yahoo.com" || host === "query2.finance.yahoo.com";
 }
@@ -80,6 +102,48 @@ function parseRetryAfterMs(retryAfterValue) {
     return delta > 0 ? delta : 0;
   }
   return 0;
+}
+
+function canonicalizeTarget(urlObj) {
+  const target = new URL(urlObj.toString());
+  if (isYahooHost(target.host) && target.pathname.includes("/v7/finance/quote")) {
+    const rawSymbols = target.searchParams.get("symbols") || "";
+    if (rawSymbols) {
+      const symbols = Array.from(
+        new Set(
+          rawSymbols
+            .split(",")
+            .map((s) => s.trim().toUpperCase())
+            .filter(Boolean)
+        )
+      ).sort();
+      target.searchParams.set("symbols", symbols.join(","));
+    }
+  }
+  if (target.host === "financialmodelingprep.com" && target.pathname.includes("/api/v3/quote/")) {
+    const prefix = "/api/v3/quote/";
+    const raw = decodeURIComponent(target.pathname.slice(prefix.length));
+    const symbols = Array.from(
+      new Set(
+        raw
+          .split(",")
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean)
+      )
+    ).sort();
+    target.pathname = `${prefix}${encodeURIComponent(symbols.join(","))}`;
+  }
+  if ((target.host === "financialmodelingprep.com" || target.host === "api.financialmodelingprep.com") && !target.searchParams.get("apikey")) {
+    const serverKey = process.env.FMP_API_KEY || process.env.EXPO_PUBLIC_FMP_API_KEY || "";
+    if (serverKey) target.searchParams.set("apikey", serverKey);
+  }
+  const entries = Array.from(target.searchParams.entries()).sort((a, b) => {
+    if (a[0] === b[0]) return a[1].localeCompare(b[1]);
+    return a[0].localeCompare(b[0]);
+  });
+  target.search = "";
+  for (const [k, v] of entries) target.searchParams.append(k, v);
+  return target;
 }
 
 module.exports = async function handler(req, res) {
@@ -112,6 +176,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  target = canonicalizeTarget(target);
   const cacheKey = target.toString();
   const cached = responseCache.get(cacheKey);
   const currentTs = now();
@@ -127,9 +192,9 @@ module.exports = async function handler(req, res) {
       sendCached(res, fallback, "cooldown-stale");
       return;
     }
-    const retrySeconds = Math.max(1, Math.ceil((cooldownUntil - currentTs) / 1000));
-    res.setHeader("Retry-After", String(retrySeconds));
-    res.status(429).json({ error: "upstream_cooldown", retryAfterSeconds: retrySeconds });
+    // Keep clients responsive during cooldown windows instead of propagating 429s.
+    setSyntheticJsonCache(cacheKey, "{}", 7_000, 45_000);
+    sendCached(res, responseCache.get(cacheKey), "cooldown-empty");
     return;
   }
 
@@ -148,8 +213,19 @@ module.exports = async function handler(req, res) {
     } catch {}
   }
 
+  const nextAllowed = hostNextAllowedAt.get(target.host) || 0;
+  if (isYahooHost(target.host) && nextAllowed > currentTs) {
+    if (cached && currentTs <= cached.staleUntil) {
+      sendCached(res, cached, "throttled-stale");
+      return;
+    }
+  }
+
   const run = (async () => {
     const ttls = getTtlsForTarget(target);
+    if (isYahooHost(target.host)) {
+      hostNextAllowedAt.set(target.host, now() + YAHOO_MIN_GAP_MS);
+    }
     const upstream = await fetch(target.toString(), {
       headers: {
         Accept: req.headers.accept || "*/*",
@@ -221,6 +297,12 @@ module.exports = async function handler(req, res) {
     const fallback = responseCache.get(cacheKey);
     if (fallback && now() <= fallback.staleUntil) {
       sendCached(res, fallback, "stale-fallback");
+      return;
+    }
+
+    if (result?.status === 429 && isYahooHost(target.host)) {
+      setSyntheticJsonCache(cacheKey, "{}", 7_000, 45_000);
+      sendCached(res, responseCache.get(cacheKey), "rate-limited-empty");
       return;
     }
 

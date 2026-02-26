@@ -100,18 +100,60 @@ type YahooQuoteSummaryResponse = {
   };
 };
 
+type FmpQuoteRow = {
+  symbol?: string;
+  name?: string;
+  price?: number | string;
+  changesPercentage?: number | string;
+  marketCap?: number | string;
+  volume?: number | string;
+  avgVolume?: number | string;
+  dayHigh?: number | string;
+  dayLow?: number | string;
+  exchange?: string;
+};
+
+type FmpScreenerRow = {
+  symbol?: string;
+  companyName?: string;
+  marketCap?: number | string;
+  volume?: number | string;
+  price?: number | string;
+  isEtf?: boolean;
+  exchange?: string;
+};
+
 const topStocksCache = new Map<string, { expiresAt: number; rows: StockMarketRow[] }>();
 const topStocksInflight = new Map<string, Promise<StockMarketRow[]>>();
 const quoteCache = new Map<string, { expiresAt: number; rows: StockMarketRow[] }>();
 const quoteInflight = new Map<string, Promise<StockMarketRow[]>>();
 const YAHOO_TIMEOUT_MS = 6500;
+const FMP_TIMEOUT_MS = 6500;
+const FMP_API_KEY =
+  (typeof process !== "undefined" &&
+    (process.env.EXPO_PUBLIC_FMP_API_KEY || process.env.FMP_API_KEY)) ||
+  "demo";
 const LOCAL_BY_SYMBOL = new Map(
   FINANCIAL_ASSETS.filter((row) => row.kind === "stock" || row.kind === "etf").map((row) => [row.symbol.toUpperCase(), row])
 );
 
+function runtimeIsWeb(): boolean {
+  return typeof window !== "undefined" && typeof document !== "undefined";
+}
+
 function asNumber(v: YahooNumber | undefined): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (v && typeof v === "object" && typeof v.raw === "number" && Number.isFinite(v.raw)) return v.raw;
+  return NaN;
+}
+
+function asLooseNumber(v: unknown): number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const normalized = v.replace(/[%,$\s]/g, "");
+    const parsed = Number(normalized);
+    if (Number.isFinite(parsed)) return parsed;
+  }
   return NaN;
 }
 
@@ -236,13 +278,23 @@ export async function fetchTopStocks(params?: {
   if (pending) return pending;
 
   const run = (async () => {
-    // Prefer large-cap universe; fall back to most-active if provider blocks that screener id.
-    const primary = await fetchScreener("largest_market_cap", Math.max(220, count));
-    const secondary = primary.length >= 120 ? [] : await fetchScreener("most_actives", Math.max(220, count));
-    const merged = [...primary, ...secondary];
+    const isWeb = runtimeIsWeb();
+    const limit = Math.max(220, count);
+    // On web, avoid Yahoo screener endpoints entirely (frequent 429 on shared serverless IPs).
+    const fmp = await fetchFmpTopUniverse(limit);
+    const primary = isWeb ? [] : await fetchScreener("largest_market_cap", limit);
+    const secondary = isWeb ? [] : primary.length >= 120 ? [] : await fetchScreener("most_actives", limit);
+    const merged = isWeb ? [...fmp] : [...primary, ...secondary, ...fmp];
     const bySymbol = new Map<string, StockMarketRow>();
     for (const row of merged) {
       if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
+    }
+    if (isWeb && bySymbol.size < count) {
+      const fallback = buildLocalFallbackRows(count);
+      for (const row of fallback) {
+        if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
+        if (bySymbol.size >= count) break;
+      }
     }
     const rows = [...bySymbol.values()]
       .sort((a, b) => {
@@ -264,12 +316,6 @@ export async function fetchTopStocks(params?: {
   }
 }
 
-function chunk<T>(items: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
-}
-
 async function fetchYahooJson<T>(url: string, timeoutMs = YAHOO_TIMEOUT_MS): Promise<T | null> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -282,6 +328,103 @@ async function fetchYahooJson<T>(url: string, timeoutMs = YAHOO_TIMEOUT_MS): Pro
   } finally {
     clearTimeout(t);
   }
+}
+
+async function fetchFmpJson<T>(url: string, timeoutMs = FMP_TIMEOUT_MS): Promise<T | null> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetchWithWebProxy(url, { headers: { Accept: "application/json" }, signal: ctrl.signal });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function toFmpRow(row: FmpQuoteRow): StockMarketRow | null {
+  const symbol = String(row.symbol ?? "").trim().toUpperCase();
+  const price = asLooseNumber(row.price);
+  if (!symbol || !Number.isFinite(price)) return null;
+  const rawName = String(row.name ?? symbol).trim();
+  const name = rawName || symbol;
+  const kind = /\bETF\b/i.test(name) ? "etf" : "stock";
+  const changePct = asLooseNumber(row.changesPercentage);
+  const marketCap = asLooseNumber(row.marketCap);
+  const volume = asLooseNumber(row.volume);
+  const avgVolume = asLooseNumber(row.avgVolume);
+  const dayHigh = asLooseNumber(row.dayHigh);
+  const dayLow = asLooseNumber(row.dayLow);
+  return {
+    symbol,
+    name,
+    kind,
+    price,
+    changePct: Number.isFinite(changePct) ? changePct : 0,
+    marketCap: Number.isFinite(marketCap) ? marketCap : 0,
+    volume: Number.isFinite(volume) ? volume : 0,
+    averageVolume: Number.isFinite(avgVolume) ? avgVolume : undefined,
+    high24h: Number.isFinite(dayHigh) ? dayHigh : undefined,
+    low24h: Number.isFinite(dayLow) ? dayLow : undefined,
+    currency: "USD",
+    exchange: row.exchange,
+    lastUpdatedAt: Date.now(),
+    logoUrl: stockLogoUrl(symbol),
+  };
+}
+
+async function fetchFmpQuoteBatch(symbols: string[]): Promise<StockMarketRow[]> {
+  if (!symbols.length) return [];
+  const uniq = Array.from(new Set(symbols.map((s) => s.toUpperCase())));
+  const chunks: string[][] = [];
+  for (let i = 0; i < uniq.length; i += 40) chunks.push(uniq.slice(i, i + 40));
+  const settled = await Promise.allSettled(
+    chunks.map(async (batch) => {
+      const joined = batch.join(",");
+      const url = `https://financialmodelingprep.com/api/v3/quote/${encodeURIComponent(joined)}?apikey=${encodeURIComponent(FMP_API_KEY)}`;
+      const rows = await fetchFmpJson<FmpQuoteRow[]>(url);
+      if (!Array.isArray(rows)) return [];
+      return rows.map(toFmpRow).filter((row): row is StockMarketRow => Boolean(row));
+    })
+  );
+  const merged = settled.flatMap((row) => (row.status === "fulfilled" ? row.value : []));
+  const bySymbol = new Map<string, StockMarketRow>();
+  for (const row of merged) {
+    if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
+  }
+  return [...bySymbol.values()];
+}
+
+function toFmpScreenerRow(row: FmpScreenerRow): StockMarketRow | null {
+  const symbol = String(row.symbol ?? "").trim().toUpperCase();
+  const price = asLooseNumber(row.price);
+  if (!symbol || !Number.isFinite(price)) return null;
+  const name = String(row.companyName ?? symbol).trim() || symbol;
+  const marketCap = asLooseNumber(row.marketCap);
+  const volume = asLooseNumber(row.volume);
+  return {
+    symbol,
+    name,
+    kind: row.isEtf ? "etf" : /\bETF\b/i.test(name) ? "etf" : "stock",
+    price,
+    changePct: 0,
+    marketCap: Number.isFinite(marketCap) ? marketCap : 0,
+    volume: Number.isFinite(volume) ? volume : 0,
+    currency: "USD",
+    exchange: row.exchange,
+    lastUpdatedAt: Date.now(),
+    logoUrl: stockLogoUrl(symbol),
+  };
+}
+
+async function fetchFmpTopUniverse(count: number): Promise<StockMarketRow[]> {
+  const limit = Math.max(40, Math.min(250, count));
+  const baseUrl = `https://financialmodelingprep.com/api/v3/stock-screener?marketCapMoreThan=5000000000&limit=${limit}&exchange=NASDAQ,NYSE&apikey=${encodeURIComponent(FMP_API_KEY)}`;
+  const rows = await fetchFmpJson<FmpScreenerRow[]>(baseUrl);
+  if (!Array.isArray(rows) || !rows.length) return [];
+  return rows.map(toFmpScreenerRow).filter((row): row is StockMarketRow => Boolean(row));
 }
 
 async function fetchYahooQuoteBatch(symbols: string[]): Promise<StockMarketRow[]> {
@@ -372,96 +515,121 @@ async function fetchYahooQuoteSummaryFallback(symbol: string): Promise<StockMark
 
 export async function fetchStockQuoteSnapshot(
   symbols: string[],
-  params?: { useCache?: boolean; cacheTtlMs?: number }
+  params?: { useCache?: boolean; cacheTtlMs?: number; enrich?: boolean }
 ): Promise<StockMarketRow[]> {
   const uniq = Array.from(new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean)));
   if (!uniq.length) return [];
+  const isWebRuntime = runtimeIsWeb();
   const useCache = params?.useCache ?? true;
+  const enrich = params?.enrich ?? true;
   const cacheTtlMs = Math.max(5_000, params?.cacheTtlMs ?? 20_000);
-  const key = uniq.slice().sort().join(",");
+  const key = `${uniq.slice().sort().join(",")}:enrich:${enrich ? 1 : 0}`;
   const cached = quoteCache.get(key);
   if (useCache && cached && cached.expiresAt > Date.now()) return cached.rows;
   const pending = quoteInflight.get(key);
   if (pending) return pending;
 
   const run = (async () => {
-    const batches = chunk(uniq, 100);
-    const results = await Promise.all(
-      batches.map(async (batch) => fetchYahooQuoteBatch(batch))
-    );
-    const merged = results.flat();
-    const bySymbol = new Map<string, StockMarketRow>(merged.map((row) => [row.symbol, row]));
-    const missing = uniq.filter((symbol) => !bySymbol.has(symbol));
-    const incomplete = uniq.filter((symbol) => {
-      const row = bySymbol.get(symbol);
-      if (!row) return false;
-      return (row.marketCap || 0) <= 0 || (row.volume || 0) <= 0 || (row.changePct || 0) === 0;
-    });
-    const needsEnrichment = Array.from(new Set([...missing, ...incomplete])).slice(0, 24);
-    if (needsEnrichment.length) {
-      const summaryRows = await Promise.all(needsEnrichment.map((symbol) => fetchYahooQuoteSummaryFallback(symbol)));
-      for (const row of summaryRows) {
-        if (!row) continue;
-        const prev = bySymbol.get(row.symbol);
-        if (!prev) {
-          bySymbol.set(row.symbol, row);
-          continue;
-        }
-        bySymbol.set(row.symbol, {
-          ...prev,
-          price: Number.isFinite(row.price) ? row.price : prev.price,
-          changePct: (row.changePct || 0) !== 0 ? row.changePct : prev.changePct,
-          marketCap: row.marketCap > 0 ? row.marketCap : prev.marketCap,
-          volume: row.volume > 0 ? row.volume : prev.volume,
-          exchange: row.exchange || prev.exchange,
-          currency: row.currency || prev.currency,
-          lastUpdatedAt: Date.now(),
-        });
-      }
-    }
-
-    if (missing.length) {
-      const fallbackRows = await Promise.all(missing.slice(0, 12).map((symbol) => fetchYahooChartFallback(symbol)));
-      for (const row of fallbackRows) {
-        if (!row) continue;
-        if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
-      }
-    }
-
-    // Final enrichment pass: fill missing market cap / volume / change from the large-cap screener universe.
-    const stillIncomplete = uniq.filter((symbol) => {
-      const row = bySymbol.get(symbol);
-      if (!row) return true;
-      return (row.marketCap || 0) <= 0 || (row.volume || 0) <= 0 || Math.abs(row.changePct || 0) < 0.0001;
-    });
-    if (stillIncomplete.length) {
+    const bySymbol = new Map<string, StockMarketRow>();
+    // Priming with top-universe is expensive; on web it caused repeated heavy screener requests.
+    const shouldPrimeWithTopUniverse = !isWebRuntime && uniq.length > 40;
+    if (shouldPrimeWithTopUniverse) {
       const topUniverse = await fetchTopStocks({ count: 220, useCache: true, cacheTtlMs: 60_000 });
       const topBySymbol = new Map(topUniverse.map((row) => [row.symbol, row]));
-      for (const symbol of stillIncomplete) {
-        const enrich = topBySymbol.get(symbol);
-        if (!enrich) continue;
-        const prev = bySymbol.get(symbol);
-        if (!prev) {
-          bySymbol.set(symbol, { ...enrich, lastUpdatedAt: Date.now() });
-          continue;
-        }
-        bySymbol.set(symbol, {
-          ...prev,
-          name: prev.name || enrich.name,
-          kind: prev.kind || enrich.kind,
-          changePct: Math.abs(prev.changePct || 0) < 0.0001 ? enrich.changePct : prev.changePct,
-          marketCap: prev.marketCap > 0 ? prev.marketCap : enrich.marketCap,
-          volume: prev.volume > 0 ? prev.volume : enrich.volume,
-          averageVolume: prev.averageVolume ?? enrich.averageVolume,
-          high24h: prev.high24h ?? enrich.high24h,
-          low24h: prev.low24h ?? enrich.low24h,
-          currency: prev.currency || enrich.currency,
-          exchange: prev.exchange || enrich.exchange,
-          lastUpdatedAt: Date.now(),
-        });
+      for (const symbol of uniq) {
+        const top = topBySymbol.get(symbol);
+        if (top) bySymbol.set(symbol, top);
       }
     }
-    const finalRows = [...bySymbol.values()];
+
+    const remaining = uniq.filter((symbol) => !bySymbol.has(symbol));
+    if (remaining.length) {
+      const maxSymbolsFromQuoteApi = isWebRuntime ? 120 : remaining.length;
+      const symbolsToFetch = remaining.slice(0, maxSymbolsFromQuoteApi);
+      if (symbolsToFetch.length) {
+        const primaryRows = isWebRuntime ? await fetchFmpQuoteBatch(symbolsToFetch) : await fetchYahooQuoteBatch(symbolsToFetch);
+        for (const row of primaryRows) {
+          const prev = bySymbol.get(row.symbol);
+          if (!prev) {
+            bySymbol.set(row.symbol, row);
+            continue;
+          }
+          bySymbol.set(row.symbol, {
+            ...prev,
+            price: Number.isFinite(row.price) ? row.price : prev.price,
+            changePct: Number.isFinite(row.changePct) ? row.changePct : prev.changePct,
+            marketCap: row.marketCap > 0 ? row.marketCap : prev.marketCap,
+            volume: row.volume > 0 ? row.volume : prev.volume,
+            averageVolume: row.averageVolume ?? prev.averageVolume,
+            high24h: row.high24h ?? prev.high24h,
+            low24h: row.low24h ?? prev.low24h,
+            currency: row.currency || prev.currency,
+            exchange: row.exchange || prev.exchange,
+            lastUpdatedAt: Date.now(),
+          });
+        }
+      }
+      const unresolvedAfterPrimary = symbolsToFetch.filter((symbol) => !bySymbol.has(symbol));
+      if (unresolvedAfterPrimary.length && !isWebRuntime) {
+        const secondaryTargets = isWebRuntime
+          ? unresolvedAfterPrimary.slice(0, 35)
+          : unresolvedAfterPrimary;
+        const secondaryRows = isWebRuntime
+          ? await fetchYahooQuoteBatch(secondaryTargets)
+          : await fetchFmpQuoteBatch(secondaryTargets);
+        for (const row of secondaryRows) {
+          const prev = bySymbol.get(row.symbol);
+          if (!prev) {
+            bySymbol.set(row.symbol, row);
+            continue;
+          }
+          bySymbol.set(row.symbol, {
+            ...prev,
+            price: Number.isFinite(row.price) ? row.price : prev.price,
+            changePct: Number.isFinite(row.changePct) ? row.changePct : prev.changePct,
+            marketCap: row.marketCap > 0 ? row.marketCap : prev.marketCap,
+            volume: row.volume > 0 ? row.volume : prev.volume,
+            averageVolume: row.averageVolume ?? prev.averageVolume,
+            high24h: row.high24h ?? prev.high24h,
+            low24h: row.low24h ?? prev.low24h,
+            currency: row.currency || prev.currency,
+            exchange: row.exchange || prev.exchange,
+            lastUpdatedAt: Date.now(),
+          });
+        }
+      }
+    }
+
+    if (enrich && !isWebRuntime) {
+      const missingAfterQuotes = uniq.filter((symbol) => !bySymbol.has(symbol));
+      const summaryTargets = missingAfterQuotes.slice(0, isWebRuntime ? 4 : 10);
+      if (summaryTargets.length) {
+        const summaryRows = await Promise.all(summaryTargets.map((symbol) => fetchYahooQuoteSummaryFallback(symbol)));
+        for (const row of summaryRows) {
+          if (!row) continue;
+          if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
+        }
+      }
+
+      const stillMissing = uniq.filter((symbol) => !bySymbol.has(symbol));
+      if (stillMissing.length) {
+        const fallbackRows = await Promise.all(
+          stillMissing.slice(0, isWebRuntime ? 3 : 8).map((symbol) => fetchYahooChartFallback(symbol))
+        );
+        for (const row of fallbackRows) {
+          if (!row) continue;
+          if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
+        }
+      }
+    }
+
+    for (const symbol of uniq) {
+      if (bySymbol.has(symbol)) continue;
+      const local = localFallbackRow(symbol);
+      if (local) bySymbol.set(symbol, local);
+    }
+
+    const finalRows = uniq.map((symbol) => bySymbol.get(symbol)).filter((row): row is StockMarketRow => Boolean(row));
     const safeRows =
       finalRows.length > 0
         ? finalRows

@@ -193,6 +193,15 @@ export default function TabLayout() {
       />
 
       <Tabs.Screen
+        name="debt"
+        options={{
+          title: "Debt",
+          tabBarItemStyle: (info && !personalOnly) || institution ? { display: "none" } : undefined,
+          tabBarIcon: ({ color }) => <IconSymbol size={24} name="creditcard.fill" color={color} />,
+        }}
+      />
+
+      <Tabs.Screen
         name="settings"
         options={{
           title: "Settings",

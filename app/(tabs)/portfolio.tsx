@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { useIsFocused } from "@react-navigation/native";
 import Svg, { Circle, G } from "react-native-svg";
 
 import { FINANCIAL_ASSETS, FINANCIAL_ASSETS_BY_ID, FinancialAssetKind } from "../../src/catalog/financial-assets";
@@ -80,6 +81,7 @@ export default function PortfolioScreen() {
   const colors = useAppColors();
   const { addAlert } = usePriceAlerts();
   const { t, tx } = useI18n();
+  const isFocused = useIsFocused();
 
   const [compactHeader, setCompactHeader] = useState(false);
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("All");
@@ -267,6 +269,7 @@ export default function PortfolioScreen() {
   }, [holdings, updateHolding]);
 
   useEffect(() => {
+    if (!isFocused) return;
     let alive = true;
     const isAlive = () => alive;
     void pollCryptoPrices(isAlive);
@@ -277,9 +280,10 @@ export default function PortfolioScreen() {
       alive = false;
       clearInterval(timer);
     };
-  }, [pollCryptoPrices]);
+  }, [isFocused, pollCryptoPrices]);
 
   useEffect(() => {
+    if (!isFocused) return;
     let alive = true;
     const isAlive = () => alive;
     void pollEquityPrices(isAlive);
@@ -289,9 +293,10 @@ export default function PortfolioScreen() {
       alive = false;
       clearInterval(timer);
     };
-  }, [pollEquityPrices]);
+  }, [isFocused, pollEquityPrices]);
 
   useEffect(() => {
+    if (!isFocused) return;
     let alive = true;
     const pollFx = async () => {
       try {
@@ -309,7 +314,7 @@ export default function PortfolioScreen() {
       alive = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [isFocused]);
 
   const onManualRefresh = async () => {
     if (manualRefreshing) return;

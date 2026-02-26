@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { Alert } from "react-native";
+import { Alert, Platform } from "react-native";
 import { fetchCoinGeckoMarkets } from "../data/coingecko";
 import { fetchYahooQuotes } from "../data/quotes";
 import {
@@ -90,7 +90,7 @@ export function PriceAlertProvider(props: { children: ReactNode }) {
 
     let alive = true;
     let inFlight = false;
-    const everyMs = Math.max(15, settings.refreshSeconds) * 1000;
+    const everyMs = Math.max(Platform.OS === "web" ? 60 : 15, settings.refreshSeconds) * 1000;
 
     async function pollAndCheck() {
       if (!alive || inFlight) return;

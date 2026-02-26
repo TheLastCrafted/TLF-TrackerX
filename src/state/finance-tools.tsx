@@ -59,6 +59,18 @@ export type PortfolioTransaction = {
   note?: string;
 };
 
+export type DebtEntry = {
+  id: string;
+  name: string;
+  category: string;
+  balance: number;
+  aprPct: number;
+  minimumPayment: number;
+  extraPayment: number;
+  priority: number;
+  createdAt: string;
+};
+
 function upsertBudgetSpent(prev: BudgetEntry[], category: string, delta: number): BudgetEntry[] {
   if (!Number.isFinite(delta) || delta === 0) return prev;
   const normalizedCategory = normalizeSpendingCategory(category);
@@ -86,6 +98,7 @@ type FinanceToolsContextValue = {
   expenses: ExpenseEntry[];
   incomes: IncomeEntry[];
   transactions: PortfolioTransaction[];
+  debts: DebtEntry[];
   addHolding: (input: {
     assetId?: string;
     symbol: string;
@@ -132,6 +145,17 @@ type FinanceToolsContextValue = {
     note?: string;
   }) => void;
   removeTransaction: (id: string) => void;
+  addDebt: (input: {
+    name: string;
+    category: string;
+    balance: number;
+    aprPct: number;
+    minimumPayment: number;
+    extraPayment?: number;
+    priority?: number;
+  }) => void;
+  updateDebt: (id: string, patch: Partial<DebtEntry>) => void;
+  removeDebt: (id: string) => void;
 };
 
 const FinanceToolsContext = createContext<FinanceToolsContextValue | null>(null);
@@ -171,12 +195,32 @@ function ensureUniqueIds<T extends { id: string }>(rows: T[], prefix: string): T
   });
 }
 
+function normalizeDebtRow(row: Partial<DebtEntry>): DebtEntry {
+  const balance = Number(row.balance);
+  const aprPct = Number(row.aprPct);
+  const minimumPayment = Number(row.minimumPayment);
+  const extraPayment = Number(row.extraPayment);
+  const priority = Number(row.priority);
+  return {
+    id: row.id || uid("debt"),
+    name: row.name?.trim() || "Debt",
+    category: row.category?.trim() || "Other",
+    balance: Number.isFinite(balance) && balance >= 0 ? balance : 0,
+    aprPct: Number.isFinite(aprPct) && aprPct >= 0 ? aprPct : 0,
+    minimumPayment: Number.isFinite(minimumPayment) && minimumPayment >= 0 ? minimumPayment : 0,
+    extraPayment: Number.isFinite(extraPayment) && extraPayment >= 0 ? extraPayment : 0,
+    priority: Number.isFinite(priority) && priority >= 1 ? Math.floor(priority) : 1,
+    createdAt: row.createdAt || new Date().toISOString(),
+  };
+}
+
 export function FinanceToolsProvider(props: { children: ReactNode }) {
   const [holdings, setHoldings] = useState<PortfolioHolding[]>([]);
   const [budgets, setBudgets] = useState<BudgetEntry[]>([]);
   const [expenses, setExpenses] = useState<ExpenseEntry[]>([]);
   const [incomes, setIncomes] = useState<IncomeEntry[]>([]);
   const [transactions, setTransactions] = useState<PortfolioTransaction[]>([]);
+  const [debts, setDebts] = useState<DebtEntry[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -188,12 +232,14 @@ export function FinanceToolsProvider(props: { children: ReactNode }) {
         expenses: ExpenseEntry[];
         incomes: IncomeEntry[];
         transactions: PortfolioTransaction[];
+        debts: DebtEntry[];
       }>("finance_tools", {
         holdings: [],
         budgets: [],
         expenses: [],
         incomes: [],
         transactions: [],
+        debts: [],
       });
       if (!alive) return;
       const loadedHoldings = Array.isArray(saved.holdings) ? ensureUniqueIds(saved.holdings, "holding") : [];
@@ -201,18 +247,23 @@ export function FinanceToolsProvider(props: { children: ReactNode }) {
       const loadedExpenses = Array.isArray(saved.expenses) ? ensureUniqueIds(saved.expenses, "expense") : [];
       const loadedIncomes = Array.isArray(saved.incomes) ? ensureUniqueIds(saved.incomes, "income") : [];
       const loadedTransactions = Array.isArray(saved.transactions) ? ensureUniqueIds(saved.transactions, "tx") : [];
+      const loadedDebts = Array.isArray(saved.debts)
+        ? ensureUniqueIds(saved.debts.map((row) => normalizeDebtRow(row)), "debt")
+        : [];
       seedNextIdFromIds([
         ...loadedHoldings.map((x) => x.id),
         ...loadedBudgets.map((x) => x.id),
         ...loadedExpenses.map((x) => x.id),
         ...loadedIncomes.map((x) => x.id),
         ...loadedTransactions.map((x) => x.id),
+        ...loadedDebts.map((x) => x.id),
       ]);
       setHoldings(loadedHoldings);
       setBudgets(loadedBudgets);
       setExpenses(loadedExpenses);
       setIncomes(loadedIncomes);
       setTransactions(loadedTransactions);
+      setDebts(loadedDebts);
       setHydrated(true);
     })();
     return () => {
@@ -228,8 +279,9 @@ export function FinanceToolsProvider(props: { children: ReactNode }) {
       expenses,
       incomes,
       transactions,
+      debts,
     });
-  }, [holdings, budgets, expenses, incomes, transactions, hydrated]);
+  }, [holdings, budgets, expenses, incomes, transactions, debts, hydrated]);
 
   const value = useMemo<FinanceToolsContextValue>(() => {
     return {
@@ -238,6 +290,7 @@ export function FinanceToolsProvider(props: { children: ReactNode }) {
       expenses,
       incomes,
       transactions,
+      debts,
       addHolding: (input) => {
         if (
           !input.symbol.trim() ||
@@ -508,8 +561,50 @@ export function FinanceToolsProvider(props: { children: ReactNode }) {
       removeTransaction: (id) => {
         setTransactions((prev) => prev.filter((tx) => tx.id !== id));
       },
+      addDebt: (input) => {
+        const name = input.name.trim();
+        const category = input.category.trim();
+        const balance = Number(input.balance);
+        const aprPct = Number(input.aprPct);
+        const minimumPayment = Number(input.minimumPayment);
+        const extraPayment = Number.isFinite(input.extraPayment) ? Math.max(0, Number(input.extraPayment)) : 0;
+        const priority = Number.isFinite(input.priority) ? Math.max(1, Math.floor(Number(input.priority))) : debts.length + 1;
+        if (!name || !category || !Number.isFinite(balance) || !Number.isFinite(aprPct) || !Number.isFinite(minimumPayment)) return;
+        if (balance <= 0 || aprPct < 0 || minimumPayment < 0) return;
+        setDebts((prev) => [
+          {
+            id: uid("debt"),
+            name,
+            category,
+            balance,
+            aprPct,
+            minimumPayment,
+            extraPayment,
+            priority,
+            createdAt: new Date().toISOString(),
+          },
+          ...prev,
+        ]);
+      },
+      updateDebt: (id, patch) => {
+        setDebts((prev) =>
+          prev.map((row) => {
+            if (row.id !== id) return row;
+            const next: DebtEntry = { ...row, ...patch };
+            if (!Number.isFinite(next.balance) || next.balance < 0) next.balance = row.balance;
+            if (!Number.isFinite(next.aprPct) || next.aprPct < 0) next.aprPct = row.aprPct;
+            if (!Number.isFinite(next.minimumPayment) || next.minimumPayment < 0) next.minimumPayment = row.minimumPayment;
+            if (!Number.isFinite(next.extraPayment) || next.extraPayment < 0) next.extraPayment = row.extraPayment;
+            if (!Number.isFinite(next.priority) || next.priority < 1) next.priority = row.priority;
+            return next;
+          })
+        );
+      },
+      removeDebt: (id) => {
+        setDebts((prev) => prev.filter((row) => row.id !== id));
+      },
     };
-  }, [holdings, budgets, expenses, incomes, transactions]);
+  }, [holdings, budgets, expenses, incomes, transactions, debts]);
 
   return <FinanceToolsContext.Provider value={value}>{props.children}</FinanceToolsContext.Provider>;
 }

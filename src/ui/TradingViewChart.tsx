@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import { Platform, View } from "react-native";
-import { WebView } from "react-native-webview";
 
 type Props = {
   symbol: string;
@@ -79,9 +78,11 @@ export function TradingViewChart(props: Props) {
     );
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const NativeWebView = require("react-native-webview").WebView as any;
   return (
     <View style={{ height: 520, borderRadius: 16, overflow: "hidden", borderWidth: 1, borderColor: props.theme === "dark" ? "#1A1A24" : "#D7E0F0" }}>
-      <WebView
+      <NativeWebView
         key={`tv-${props.symbol}-${props.interval}-${props.locale}-${props.theme}-${props.showIndicators ? "i1" : "i0"}-${props.showVolume ? "v1" : "v0"}`}
         originWhitelist={["*"]}
         source={{ html }}

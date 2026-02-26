@@ -38,6 +38,7 @@ const PERSONAL_ITEMS: MenuItem[] = [
   { route: "strategy", label: "Strategy", icon: "functions", mode: "personal" },
   { route: "budget", label: "Budget", icon: "account-balance-wallet", mode: "personal" },
   { route: "cashflow", label: "Cashflow", icon: "bar-chart", mode: "personal" },
+  { route: "debt", label: "Debt", icon: "credit-card", mode: "personal" },
 ];
 
 export function MinimalBottomBar(props: BottomTabBarProps) {
@@ -93,6 +94,7 @@ export function MinimalBottomBar(props: BottomTabBarProps) {
       Strategy: "Strategie",
       Budget: "Budget",
       Cashflow: "Cashflow",
+      Debt: "Schulden",
     };
     return t(label, map[label] ?? label);
   };
