@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { View } from "react-native";
+import { Platform, View } from "react-native";
 import { WebView } from "react-native-webview";
 
 type Props = {
@@ -16,12 +16,12 @@ function escapeJs(input: string): string {
 }
 
 export function TradingViewChart(props: Props) {
-  const source = useMemo(() => {
+  const html = useMemo(() => {
     const studies = props.showIndicators
       ? "['RSI@tv-basicstudies','MACD@tv-basicstudies','MASimple@tv-basicstudies']"
       : "[]";
 
-    const html = `<!doctype html>
+    return `<!doctype html>
 <html>
   <head>
     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
@@ -54,16 +54,37 @@ export function TradingViewChart(props: Props) {
     </script>
   </body>
 </html>`;
-
-    return { html };
   }, [props.interval, props.locale, props.showIndicators, props.showVolume, props.symbol, props.theme]);
+
+  if (Platform.OS === "web") {
+    const IFrame: any = "iframe";
+    return (
+      <View
+        style={{
+          height: 520,
+          borderRadius: 16,
+          overflow: "hidden",
+          borderWidth: 1,
+          borderColor: props.theme === "dark" ? "#1A1A24" : "#D7E0F0",
+          backgroundColor: props.theme === "dark" ? "#0F0F16" : "#FFFFFF",
+        }}
+      >
+        <IFrame
+          title={`tv-${props.symbol}`}
+          srcDoc={html}
+          sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+          style={{ width: "100%", height: "100%", border: "none" }}
+        />
+      </View>
+    );
+  }
 
   return (
     <View style={{ height: 520, borderRadius: 16, overflow: "hidden", borderWidth: 1, borderColor: props.theme === "dark" ? "#1A1A24" : "#D7E0F0" }}>
       <WebView
         key={`tv-${props.symbol}-${props.interval}-${props.locale}-${props.theme}-${props.showIndicators ? "i1" : "i0"}-${props.showVolume ? "v1" : "v0"}`}
         originWhitelist={["*"]}
-        source={source}
+        source={{ html }}
         javaScriptEnabled
         domStorageEnabled
         setSupportMultipleWindows={false}
