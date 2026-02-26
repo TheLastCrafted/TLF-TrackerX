@@ -58,6 +58,7 @@ const FMP_API_KEY =
   (typeof process !== "undefined" &&
     (process.env.EXPO_PUBLIC_FMP_API_KEY || process.env.FMP_API_KEY)) ||
   "demo";
+const HAS_USABLE_FMP_KEY = typeof FMP_API_KEY === "string" && FMP_API_KEY.trim().toLowerCase() !== "demo";
 
 function runtimeIsWeb(): boolean {
   return typeof window !== "undefined" && typeof document !== "undefined";
@@ -128,6 +129,7 @@ async function fetchYahooChartPoint(symbol: string): Promise<QuoteRow | null> {
 }
 
 async function fetchFmpSeries(symbol: string, days: number): Promise<QuoteSeriesPoint[]> {
+  if (!HAS_USABLE_FMP_KEY) return [];
   const key = toYahooSymbol(symbol).replace("-", ".");
   if (!key) return [];
   const timeseries = Math.max(40, Math.min(5000, Math.ceil(days * 1.4)));
@@ -160,6 +162,49 @@ async function fetchFmpSeries(symbol: string, days: number): Promise<QuoteSeries
   }
 }
 
+async function fetchYahooChartSeries(
+  symbol: string,
+  days: number,
+  fallback: QuoteSeriesPoint[] = []
+): Promise<QuoteSeriesPoint[]> {
+  const range =
+    days <= 30 ? "1mo" :
+    days <= 90 ? "3mo" :
+    days <= 180 ? "6mo" :
+    days <= 365 ? "1y" :
+    days <= 1825 ? "5y" :
+    "10y";
+  const url =
+    `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
+    `?interval=1d&range=${encodeURIComponent(range)}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 7000);
+  try {
+    const res = await fetchWithWebProxy(url, { headers: { Accept: "application/json" }, signal: ctrl.signal });
+    if (!res.ok) return fallback;
+    const json = (await res.json()) as YahooChartResponse;
+    const result = json.chart?.result?.[0];
+    const ts = result?.timestamp ?? [];
+    const closes = result?.indicators?.quote?.[0]?.close ?? [];
+    const out: QuoteSeriesPoint[] = [];
+    const n = Math.min(ts.length, closes.length);
+    for (let i = 0; i < n; i += 1) {
+      const t = Number(ts[i]);
+      const c = Number(closes[i]);
+      if (!Number.isFinite(t) || !Number.isFinite(c)) continue;
+      out.push({ x: t * 1000, y: c });
+    }
+    if (!out.length) return fallback;
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    const filtered = out.filter((p) => p.x >= cutoff);
+    return filtered.length >= 2 ? filtered : out;
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function fetchYahooSeries(symbol: string, days = 365): Promise<QuoteSeriesPoint[]> {
   const s = toYahooSymbol(symbol);
   if (!s) return [];
@@ -168,55 +213,20 @@ export async function fetchYahooSeries(symbol: string, days = 365): Promise<Quot
   if (cached && Date.now() <= cached.expiresAt) return cached.data;
   const pending = seriesInflight.get(cacheKey);
   if (pending) return pending;
-  if (runtimeIsWeb()) {
-    const runWeb = (async () => {
+  const run = (async () => {
+    if (runtimeIsWeb() && HAS_USABLE_FMP_KEY) {
       const fmpSeries = await fetchFmpSeries(s, days);
       if (fmpSeries.length) {
         seriesCache.set(cacheKey, { expiresAt: Date.now() + 2 * 60_000, data: fmpSeries });
         return fmpSeries;
       }
-      return cached?.data ?? [];
-    })();
-    seriesInflight.set(cacheKey, runWeb);
-    try {
-      return await runWeb;
-    } finally {
-      seriesInflight.delete(cacheKey);
     }
-  }
-  const range = days <= 30 ? "1mo" : days <= 90 ? "3mo" : days <= 180 ? "6mo" : days <= 365 ? "1y" : days <= 1825 ? "5y" : "10y";
-  const url =
-    `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(s)}` +
-    `?interval=1d&range=${encodeURIComponent(range)}`;
-  const run = (async () => {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 7000);
-    try {
-      const res = await fetchWithWebProxy(url, { headers: { Accept: "application/json" }, signal: ctrl.signal });
-      if (!res.ok) return [];
-      const json = (await res.json()) as YahooChartResponse;
-      const result = json.chart?.result?.[0];
-      const ts = result?.timestamp ?? [];
-      const closes = result?.indicators?.quote?.[0]?.close ?? [];
-      const out: QuoteSeriesPoint[] = [];
-      const n = Math.min(ts.length, closes.length);
-      for (let i = 0; i < n; i += 1) {
-        const t = Number(ts[i]);
-        const c = Number(closes[i]);
-        if (!Number.isFinite(t) || !Number.isFinite(c)) continue;
-        out.push({ x: t * 1000, y: c });
-      }
-      if (!out.length) return [];
-      const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-      const filtered = out.filter((p) => p.x >= cutoff);
-      const finalRows = filtered.length >= 2 ? filtered : out;
-      seriesCache.set(cacheKey, { expiresAt: Date.now() + 2 * 60_000, data: finalRows });
-      return finalRows;
-    } catch {
-      return cached?.data ?? [];
-    } finally {
-      clearTimeout(timer);
+    const yahooSeries = await fetchYahooChartSeries(s, days, cached?.data ?? []);
+    if (yahooSeries.length) {
+      seriesCache.set(cacheKey, { expiresAt: Date.now() + 2 * 60_000, data: yahooSeries });
+      return yahooSeries;
     }
+    return cached?.data ?? [];
   })();
   seriesInflight.set(cacheKey, run);
   try {

@@ -133,6 +133,7 @@ const FMP_API_KEY =
   (typeof process !== "undefined" &&
     (process.env.EXPO_PUBLIC_FMP_API_KEY || process.env.FMP_API_KEY)) ||
   "demo";
+const HAS_USABLE_FMP_KEY = typeof FMP_API_KEY === "string" && FMP_API_KEY.trim().toLowerCase() !== "demo";
 const LOCAL_BY_SYMBOL = new Map(
   FINANCIAL_ASSETS.filter((row) => row.kind === "stock" || row.kind === "etf").map((row) => [row.symbol.toUpperCase(), row])
 );
@@ -280,11 +281,11 @@ export async function fetchTopStocks(params?: {
   const run = (async () => {
     const isWeb = runtimeIsWeb();
     const limit = Math.max(220, count);
-    // On web, avoid Yahoo screener endpoints entirely (frequent 429 on shared serverless IPs).
-    const fmp = await fetchFmpTopUniverse(limit);
+    const yahooSeedUniverse = isWeb ? await fetchYahooTopUniverseFromSeed(limit) : [];
+    const fmp = HAS_USABLE_FMP_KEY ? await fetchFmpTopUniverse(limit) : [];
     const primary = isWeb ? [] : await fetchScreener("largest_market_cap", limit);
     const secondary = isWeb ? [] : primary.length >= 120 ? [] : await fetchScreener("most_actives", limit);
-    const merged = isWeb ? [...fmp] : [...primary, ...secondary, ...fmp];
+    const merged = isWeb ? [...yahooSeedUniverse, ...fmp] : [...primary, ...secondary, ...fmp];
     const bySymbol = new Map<string, StockMarketRow>();
     for (const row of merged) {
       if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
@@ -429,13 +430,46 @@ async function fetchFmpTopUniverse(count: number): Promise<StockMarketRow[]> {
 
 async function fetchYahooQuoteBatch(symbols: string[]): Promise<StockMarketRow[]> {
   if (!symbols.length) return [];
-  const joined = encodeURIComponent(symbols.join(","));
-  const primaryUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${joined}`;
-  const secondaryUrl = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${joined}`;
-  const primary = await fetchYahooJson<YahooQuoteResponse>(primaryUrl);
-  const secondary = primary ? null : await fetchYahooJson<YahooQuoteResponse>(secondaryUrl);
-  const rows = (primary ?? secondary)?.quoteResponse?.result ?? [];
-  return rows.map(toRow).filter((row): row is StockMarketRow => Boolean(row));
+  const uniq = Array.from(new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean)));
+  if (!uniq.length) return [];
+  const chunks: string[][] = [];
+  for (let i = 0; i < uniq.length; i += 40) chunks.push(uniq.slice(i, i + 40));
+  const settled = await Promise.allSettled(
+    chunks.map(async (batch) => {
+      const joined = encodeURIComponent(batch.join(","));
+      const primaryUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${joined}`;
+      const secondaryUrl = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${joined}`;
+      const primary = await fetchYahooJson<YahooQuoteResponse>(primaryUrl);
+      const secondary = primary ? null : await fetchYahooJson<YahooQuoteResponse>(secondaryUrl);
+      const rows = (primary ?? secondary)?.quoteResponse?.result ?? [];
+      return rows.map(toRow).filter((row): row is StockMarketRow => Boolean(row));
+    })
+  );
+  const merged = settled.flatMap((row) => (row.status === "fulfilled" ? row.value : []));
+  const bySymbol = new Map<string, StockMarketRow>();
+  for (const row of merged) {
+    if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
+  }
+  return [...bySymbol.values()];
+}
+
+async function fetchYahooTopUniverseFromSeed(count: number): Promise<StockMarketRow[]> {
+  const seedSymbols = FINANCIAL_ASSETS
+    .filter((row) => row.kind === "stock" || row.kind === "etf")
+    .map((row) => row.symbol.toUpperCase());
+  const sample = seedSymbols.slice(0, Math.max(120, Math.min(240, count + 40)));
+  if (!sample.length) return [];
+  const rows = await fetchYahooQuoteBatch(sample);
+  if (!rows.length) return [];
+  return rows.map((row) => {
+    const meta = LOCAL_BY_SYMBOL.get(row.symbol);
+    return {
+      ...row,
+      name: meta?.name || row.name,
+      kind: meta?.kind === "etf" ? "etf" : row.kind,
+      logoUrl: stockLogoUrl(row.symbol),
+    };
+  });
 }
 
 async function fetchYahooChartFallback(symbol: string): Promise<StockMarketRow | null> {
@@ -531,6 +565,7 @@ export async function fetchStockQuoteSnapshot(
 
   const run = (async () => {
     const bySymbol = new Map<string, StockMarketRow>();
+    const preferFmpOnWeb = isWebRuntime && HAS_USABLE_FMP_KEY;
     // Priming with top-universe is expensive; on web it caused repeated heavy screener requests.
     const shouldPrimeWithTopUniverse = !isWebRuntime && uniq.length > 40;
     if (shouldPrimeWithTopUniverse) {
@@ -547,7 +582,11 @@ export async function fetchStockQuoteSnapshot(
       const maxSymbolsFromQuoteApi = isWebRuntime ? 120 : remaining.length;
       const symbolsToFetch = remaining.slice(0, maxSymbolsFromQuoteApi);
       if (symbolsToFetch.length) {
-        const primaryRows = isWebRuntime ? await fetchFmpQuoteBatch(symbolsToFetch) : await fetchYahooQuoteBatch(symbolsToFetch);
+        const primaryRows = isWebRuntime
+          ? preferFmpOnWeb
+            ? await fetchFmpQuoteBatch(symbolsToFetch)
+            : await fetchYahooQuoteBatch(symbolsToFetch)
+          : await fetchYahooQuoteBatch(symbolsToFetch);
         for (const row of primaryRows) {
           const prev = bySymbol.get(row.symbol);
           if (!prev) {
@@ -570,12 +609,14 @@ export async function fetchStockQuoteSnapshot(
         }
       }
       const unresolvedAfterPrimary = symbolsToFetch.filter((symbol) => !bySymbol.has(symbol));
-      if (unresolvedAfterPrimary.length && !isWebRuntime) {
-        const secondaryTargets = isWebRuntime
-          ? unresolvedAfterPrimary.slice(0, 35)
-          : unresolvedAfterPrimary;
+      if (unresolvedAfterPrimary.length) {
+        const secondaryTargets = isWebRuntime ? unresolvedAfterPrimary.slice(0, 35) : unresolvedAfterPrimary;
         const secondaryRows = isWebRuntime
-          ? await fetchYahooQuoteBatch(secondaryTargets)
+          ? preferFmpOnWeb
+            ? await fetchYahooQuoteBatch(secondaryTargets)
+            : HAS_USABLE_FMP_KEY
+              ? await fetchFmpQuoteBatch(secondaryTargets)
+              : []
           : await fetchFmpQuoteBatch(secondaryTargets);
         for (const row of secondaryRows) {
           const prev = bySymbol.get(row.symbol);

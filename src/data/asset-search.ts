@@ -51,10 +51,7 @@ const FMP_API_KEY =
   (typeof process !== "undefined" &&
     (process.env.EXPO_PUBLIC_FMP_API_KEY || process.env.FMP_API_KEY)) ||
   "demo";
-
-function runtimeIsWeb(): boolean {
-  return typeof window !== "undefined" && typeof document !== "undefined";
-}
+const HAS_USABLE_FMP_KEY = typeof FMP_API_KEY === "string" && FMP_API_KEY.trim().toLowerCase() !== "demo";
 
 function normalizeYahooType(quoteType?: string, nameHint?: string): SearchAssetKind | null {
   const name = (nameHint ?? "").toUpperCase();
@@ -200,8 +197,8 @@ export async function searchUniversalAssets(query: string, limit = 24): Promise<
       lastPrice: asset.defaultPrice,
     }));
 
-  const yahooTask = runtimeIsWeb() ? Promise.resolve([] as UniversalAsset[]) : searchYahoo(q, limit);
-  const [yahooRows, cryptoRows, fmpRows] = await Promise.allSettled([yahooTask, searchCoinGecko(q, limit), searchFmp(q, limit)]);
+  const fmpTask = HAS_USABLE_FMP_KEY ? searchFmp(q, limit) : Promise.resolve([] as UniversalAsset[]);
+  const [yahooRows, cryptoRows, fmpRows] = await Promise.allSettled([searchYahoo(q, limit), searchCoinGecko(q, limit), fmpTask]);
   const merged = [
     ...localRows,
     ...(yahooRows.status === "fulfilled" ? yahooRows.value : []),

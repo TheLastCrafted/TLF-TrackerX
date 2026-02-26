@@ -110,6 +110,10 @@ const FEEDS: Record<NewsCategory, string[]> = {
   ],
 };
 
+function runtimeIsWeb(): boolean {
+  return typeof window !== "undefined" && typeof document !== "undefined";
+}
+
 function decodeHtml(input: string): string {
   return input
     .replace(/&amp;/g, "&")
@@ -236,7 +240,7 @@ async function fetchArticleImage(url: string): Promise<string | null> {
   if (!url || !url.startsWith("http")) return null;
   if (articleImageCache.has(url)) return articleImageCache.get(url) ?? null;
   try {
-    const res = await fetch(url, {
+    const res = await fetchWithWebProxy(url, {
       headers: {
         Accept: "text/html,application/xhtml+xml",
         "User-Agent": "tlf-trackerx/1.0",
@@ -374,7 +378,9 @@ export async function fetchNewsByCategory(category: NewsCategory): Promise<NewsA
     .sort((a, b) => new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime())
     .slice(0, 120);
 
-  await enrichArticleImages(sorted);
+  if (!runtimeIsWeb()) {
+    await enrichArticleImages(sorted);
+  }
 
   const fallbackQuery =
     category === "crypto" ? "crypto bitcoin" :
@@ -397,6 +403,8 @@ export async function fetchNewsByCategory(category: NewsCategory): Promise<NewsA
   const finalRows = deduped
     .sort((a, b) => new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime())
     .slice(0, 120);
-  await enrichArticleImages(finalRows);
+  if (!runtimeIsWeb()) {
+    await enrichArticleImages(finalRows);
+  }
   return finalRows;
 }
