@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import Constants from "expo-constants";
 import { useRouter } from "expo-router";
 import { useRef, useState } from "react";
 import { Alert, Pressable, ScrollView, Text, View } from "react-native";
@@ -125,6 +126,23 @@ export default function SettingsScreen() {
   const haptic = useHapticPress();
   const [compactHeader, setCompactHeader] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+  const appVersion = Constants.expoConfig?.version ?? "dev";
+  const extras = (Constants.expoConfig?.extra ?? {}) as {
+    versionLabel?: string;
+    buildIteration?: number | string;
+    shortSha?: string;
+  };
+  const alphaLabel =
+    typeof extras.versionLabel === "string" && extras.versionLabel.trim().length
+      ? extras.versionLabel.trim()
+      : `TLF-TrackerX v0.1 alpha.${String(extras.buildIteration ?? "1")}`;
+  const iosBuild = Constants.expoConfig?.ios?.buildNumber ?? "-";
+  const androidBuild = Constants.expoConfig?.android?.versionCode ? String(Constants.expoConfig.android.versionCode) : "-";
+  const releaseTag =
+    (typeof process !== "undefined" &&
+      (process.env.EXPO_PUBLIC_RELEASE || process.env.EXPO_PUBLIC_VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_GIT_COMMIT_SHA)) ||
+    extras.shortSha ||
+    "-";
   useLogoScrollToTop(() => {
     scrollRef.current?.scrollTo({ y: 0, animated: true });
   });
@@ -482,6 +500,26 @@ export default function SettingsScreen() {
             <MaterialIcons name="chevron-right" size={18} color={colors.subtext} />
           </Pressable>
         ))}
+      </Section>
+
+      <Section
+        title={t("App Version", "App-Version")}
+        subtitle={t("Use this section to verify the currently running build.", "Nutze diesen Bereich, um den aktuell laufenden Build zu pruefen.")}
+      >
+        <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 6 }}>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>
+            {alphaLabel}
+          </Text>
+          <Text style={{ color: colors.subtext }}>
+            {t("Expo version", "Expo-Version")}: {appVersion}
+          </Text>
+          <Text style={{ color: colors.subtext }}>
+            iOS {t("Build", "Build")}: {iosBuild} • Android {t("Build", "Build")}: {androidBuild}
+          </Text>
+          <Text style={{ color: colors.subtext }}>
+            {t("Release", "Release")}: {releaseTag}
+          </Text>
+        </View>
       </Section>
     </ScrollView>
   );
