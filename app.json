@@ -33,7 +33,7 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/icon-v2.png"
+      "favicon": "./assets/images/web-tab-icon.png"
     },
     "plugins": [
       "expo-router",
