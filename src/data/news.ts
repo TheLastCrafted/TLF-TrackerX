@@ -340,7 +340,7 @@ async function fetchHn(query: string, category: NewsCategory): Promise<NewsArtic
 }
 
 export async function fetchNewsByCategory(category: NewsCategory): Promise<NewsArticle[]> {
-  const urls = FEEDS[category];
+  const urls = runtimeIsWeb() ? [] : FEEDS[category];
   const responses = await Promise.allSettled(urls.map((url) => fetchReddit(url)));
   const out: NewsArticle[] = [];
 
@@ -383,10 +383,10 @@ export async function fetchNewsByCategory(category: NewsCategory): Promise<NewsA
   }
 
   const fallbackQuery =
-    category === "crypto" ? "crypto bitcoin" :
-    category === "stocks" ? "stocks earnings market" :
-    category === "macro" ? "inflation fed rates macro" :
-    "global economy finance";
+    category === "crypto" ? "bitcoin crypto" :
+    category === "stocks" ? "stocks market earnings" :
+    category === "macro" ? "inflation fed rates economy" :
+    "world markets economy";
 
   if (sorted.length >= 20) return sorted;
 

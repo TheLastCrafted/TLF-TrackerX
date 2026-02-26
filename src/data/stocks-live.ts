@@ -446,10 +446,16 @@ async function fetchFmpTopUniverse(count: number): Promise<StockMarketRow[]> {
 async function fetchYfinanceQuoteBatch(symbols: string[]): Promise<StockMarketRow[]> {
   const uniq = Array.from(new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean)));
   if (!uniq.length) return [];
+  const chunkSize = 10;
+  const maxParallel = 3;
   const chunks: string[][] = [];
-  for (let i = 0; i < uniq.length; i += 80) chunks.push(uniq.slice(i, i + 80));
-  const settled = await Promise.allSettled(
-    chunks.map(async (batch) => {
+  for (let i = 0; i < uniq.length; i += chunkSize) chunks.push(uniq.slice(i, i + chunkSize));
+  const merged: StockMarketRow[] = [];
+
+  for (let i = 0; i < chunks.length; i += maxParallel) {
+    const wave = chunks.slice(i, i + maxParallel);
+    const settled = await Promise.allSettled(
+      wave.map(async (batch) => {
       const url = `/api/yfinance?symbols=${encodeURIComponent(batch.join(","))}`;
       const res = await fetch(url, { headers: { Accept: "application/json" } });
       if (!res.ok) return [] as StockMarketRow[];
@@ -490,9 +496,11 @@ async function fetchYfinanceQuoteBatch(symbols: string[]): Promise<StockMarketRo
           return quote;
         });
       return mapped.filter((row): row is StockMarketRow => Boolean(row));
-    })
-  );
-  const merged = settled.flatMap((row) => (row.status === "fulfilled" ? row.value : []));
+      })
+    );
+    merged.push(...settled.flatMap((row) => (row.status === "fulfilled" ? row.value : [])));
+  }
+
   const bySymbol = new Map<string, StockMarketRow>();
   for (const row of merged) {
     if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
@@ -536,7 +544,8 @@ async function fetchYahooTopUniverseFromSeed(count: number): Promise<StockMarket
   const seedSymbols = FINANCIAL_ASSETS
     .filter((row) => row.kind === "stock" || row.kind === "etf")
     .map((row) => row.symbol.toUpperCase());
-  const sample = seedSymbols.slice(0, Math.max(120, Math.min(240, count + 40)));
+  const sampleLimit = runtimeIsWeb() ? Math.max(70, Math.min(120, count)) : Math.max(120, Math.min(240, count + 40));
+  const sample = seedSymbols.slice(0, sampleLimit);
   if (!sample.length) return [];
   const rows = await fetchYahooThenYfinanceQuoteBatch(sample);
   if (!rows.length) return [];

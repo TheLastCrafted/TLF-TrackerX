@@ -39,7 +39,7 @@ export default function NewsScreen() {
   const [loading, setLoading] = useState(false);
   const [manualRefreshing, setManualRefreshing] = useState(false);
   const [compactHeader, setCompactHeader] = useState(false);
-  const [ageFilter, setAgeFilter] = useState<"all" | "24h" | "7d">("24h");
+  const [ageFilter, setAgeFilter] = useState<"all" | "24h" | "7d">("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [localizedSnippets, setLocalizedSnippets] = useState<Record<string, LocalizedSnippet>>({});
   const localizedRef = useRef<Record<string, LocalizedSnippet>>({});
