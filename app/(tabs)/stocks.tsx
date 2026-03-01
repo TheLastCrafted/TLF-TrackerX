@@ -10,7 +10,7 @@ import { searchUniversalAssets, UniversalAsset } from "../../src/data/asset-sear
 import {
   fetchStockQuoteSnapshot,
   fetchTopStocks,
-  getLocalStockFallbackRows,
+  getLastKnownTopStocks,
   StockMarketRow,
 } from "../../src/data/stocks-live";
 import { useI18n } from "../../src/i18n/use-i18n";
@@ -207,28 +207,28 @@ export default function StocksScreen() {
           setError(null);
           return true;
         }
-        const fallbackRows = getLocalStockFallbackRows(200);
-        if (fallbackRows.length) {
+        const fallbackRows = await getLastKnownTopStocks(200);
+        if (fallbackRows.length && rowsRef.current.length === 0) {
           setRows(fallbackRows);
-          setLastUpdatedAt(Date.now());
+          setLastUpdatedAt(fallbackRows[0]?.lastUpdatedAt ?? Date.now());
         }
         setError(
           t(
-            "Live stock provider is rate-limited right now. Showing fallback rows.",
-            "Live-Aktienanbieter ist aktuell limitiert. Es werden Fallback-Daten angezeigt."
+            "Live stock provider is rate-limited right now. Showing the latest saved market snapshot.",
+            "Live-Aktienanbieter ist aktuell limitiert. Es wird der zuletzt gespeicherte Marktsnapshot angezeigt."
           )
         );
         return fallbackRows.length > 0 || rowsRef.current.length > 0;
       } catch {
-        const fallbackRows = getLocalStockFallbackRows(200);
-        if (fallbackRows.length) {
+        const fallbackRows = await getLastKnownTopStocks(200);
+        if (fallbackRows.length && rowsRef.current.length === 0) {
           setRows(fallbackRows);
-          setLastUpdatedAt(Date.now());
+          setLastUpdatedAt(fallbackRows[0]?.lastUpdatedAt ?? Date.now());
         }
         setError(
           t(
-            "Live stock provider is rate-limited right now. Showing fallback rows.",
-            "Live-Aktienanbieter ist aktuell limitiert. Es werden Fallback-Daten angezeigt."
+            "Live stock provider is rate-limited right now. Showing the latest saved market snapshot.",
+            "Live-Aktienanbieter ist aktuell limitiert. Es wird der zuletzt gespeicherte Marktsnapshot angezeigt."
           )
         );
         return fallbackRows.length > 0 || rowsRef.current.length > 0;

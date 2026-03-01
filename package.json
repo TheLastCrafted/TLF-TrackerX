@@ -9,6 +9,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
+    "check": "npm run lint && npx tsc --noEmit",
     "build:alpha:android": "npx eas build -p android --profile alpha",
     "build:alpha:ios": "npx eas build -p ios --profile alpha",
     "build:preview:android": "npx eas build -p android --profile preview",

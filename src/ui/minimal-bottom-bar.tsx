@@ -1,13 +1,16 @@
 import { useState } from "react";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
-import { Pressable, Text, View } from "react-native";
+import { Alert, Pressable, Text, View, type ViewStyle } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 
+import { getRouteAccessPolicy, routeRequiresPremium } from "../config/subscription";
 import { useI18n } from "../i18n/use-i18n";
 import { useAppMode } from "../state/app-mode";
 import { useCommandCenter } from "../state/command-center";
 import { useSettings } from "../state/settings";
+import { useSubscriptionAccess } from "../state/subscription-access";
 import { useHapticPress } from "./use-haptic-press";
 import { useAppColors } from "./use-app-colors";
 
@@ -42,9 +45,11 @@ const PERSONAL_ITEMS: MenuItem[] = [
 ];
 
 export function MinimalBottomBar(props: BottomTabBarProps) {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const { mode, setMode } = useAppMode();
   const { openCenter } = useCommandCenter();
+  const { canAccessRoute } = useSubscriptionAccess();
   const { settings } = useSettings();
   const workspaceMode = settings.workspaceMode ?? (settings.institutionalMode ? "institutional" : "hybrid");
   const infoLocked = workspaceMode === "institutional";
@@ -71,6 +76,22 @@ export function MinimalBottomBar(props: BottomTabBarProps) {
     haptic("light");
     if (item.mode === "informational" && personalLocked) return;
     if (item.mode === "personal" && infoLocked) return;
+    if (!canAccessRoute(item.route)) {
+      haptic("medium");
+      const policy = getRouteAccessPolicy(item.route);
+      Alert.alert(
+        t("Premium Feature", "Premium-Feature"),
+        t(
+          `${policy?.label ?? item.label} is part of Premium. Open Account to review or unlock later.`,
+          `${policy?.label ?? item.label} ist Teil von Premium. Oeffne Konto, um den Zugang zu sehen oder spaeter freizuschalten.`
+        ),
+        [
+          { text: t("Cancel", "Abbrechen"), style: "cancel" },
+          { text: t("Open Account", "Konto oeffnen"), onPress: () => router.push("/account") },
+        ]
+      );
+      return;
+    }
     if (mode !== item.mode) setMode(item.mode);
     props.navigation.navigate(item.route);
     setOpen(false);
@@ -97,6 +118,18 @@ export function MinimalBottomBar(props: BottomTabBarProps) {
       Debt: "Schulden",
     };
     return t(label, map[label] ?? label);
+  };
+
+  const shortcutTileBase: ViewStyle = {
+    width: "31%",
+    minWidth: 112,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 6,
   };
 
   return (
@@ -154,25 +187,25 @@ export function MinimalBottomBar(props: BottomTabBarProps) {
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
                   {INFO_ITEMS.map((item) => {
                     const active = activeRoute === item.route;
+                    const lockedByPlan = routeRequiresPremium(item.route) && !canAccessRoute(item.route);
                     return (
                       <Pressable
                         key={item.route}
                         onPress={() => go(item)}
                         style={({ pressed }) => ({
-                          borderRadius: 12,
-                          borderWidth: 1,
-                          borderColor: active ? "#A98BFF" : colors.border,
+                          ...shortcutTileBase,
+                          borderColor: active ? "#A98BFF" : lockedByPlan ? colors.accentBorder : colors.border,
                           backgroundColor: pressed ? (colors.dark ? "#1A1E2E" : "#EEF2FF") : colors.surface,
-                          paddingHorizontal: 10,
-                          paddingVertical: 8,
-                          minWidth: 112,
-                          flexDirection: "row",
-                          alignItems: "center",
-                          gap: 6,
+                          opacity: lockedByPlan ? 0.9 : 1,
                         })}
                       >
-                        <MaterialIcons name={item.icon} size={14} color={active ? "#A98BFF" : colors.subtext} />
-                        <Text style={{ color: active ? "#A98BFF" : colors.text, fontWeight: "700", fontSize: 12 }}>{trLabel(item.label)}</Text>
+                        <MaterialIcons name={item.icon} size={14} color={active ? "#A98BFF" : lockedByPlan ? colors.accent : colors.subtext} />
+                        <View style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                          <Text numberOfLines={1} style={{ color: active ? "#A98BFF" : lockedByPlan ? colors.accent : colors.text, fontWeight: "700", fontSize: 12, flex: 1 }}>
+                            {trLabel(item.label)}
+                          </Text>
+                          {lockedByPlan && <MaterialIcons name="lock" size={12} color={colors.accent} />}
+                        </View>
                       </Pressable>
                     );
                   })}
@@ -186,25 +219,25 @@ export function MinimalBottomBar(props: BottomTabBarProps) {
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
                   {PERSONAL_ITEMS.map((item) => {
                     const active = activeRoute === item.route;
+                    const lockedByPlan = routeRequiresPremium(item.route) && !canAccessRoute(item.route);
                     return (
                       <Pressable
                         key={item.route}
                         onPress={() => go(item)}
                         style={({ pressed }) => ({
-                          borderRadius: 12,
-                          borderWidth: 1,
-                          borderColor: active ? "#8E63F0" : colors.border,
+                          ...shortcutTileBase,
+                          borderColor: active ? "#8E63F0" : lockedByPlan ? colors.accentBorder : colors.border,
                           backgroundColor: pressed ? (colors.dark ? "#1A1E2E" : "#EEF2FF") : colors.surface,
-                          paddingHorizontal: 10,
-                          paddingVertical: 8,
-                          minWidth: 112,
-                          flexDirection: "row",
-                          alignItems: "center",
-                          gap: 6,
+                          opacity: lockedByPlan ? 0.9 : 1,
                         })}
                       >
-                        <MaterialIcons name={item.icon} size={14} color={active ? "#8E63F0" : colors.subtext} />
-                        <Text style={{ color: active ? "#8E63F0" : colors.text, fontWeight: "700", fontSize: 12 }}>{trLabel(item.label)}</Text>
+                        <MaterialIcons name={item.icon} size={14} color={active ? "#8E63F0" : lockedByPlan ? colors.accent : colors.subtext} />
+                        <View style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                          <Text numberOfLines={1} style={{ color: active ? "#8E63F0" : lockedByPlan ? colors.accent : colors.text, fontWeight: "700", fontSize: 12, flex: 1 }}>
+                            {trLabel(item.label)}
+                          </Text>
+                          {lockedByPlan && <MaterialIcons name="lock" size={12} color={colors.accent} />}
+                        </View>
                       </Pressable>
                     );
                   })}

@@ -4,11 +4,26 @@ const ALLOWED_HOSTS = new Set([
   "api.coingecko.com",
   "fred.stlouisfed.org",
   "api.binance.com",
+  "stooq.com",
+  "www.stooq.com",
+  "api.alternative.me",
+  "api.blockchain.info",
+  "blockchain.info",
+  "charts.bgeometrics.com",
+  "bitcoin-data.com",
   "financialmodelingprep.com",
   "api.financialmodelingprep.com",
   "www.reddit.com",
   "reddit.com",
-  "hn.algolia.com",
+  "news.google.com",
+  "feeds.reuters.com",
+  "feeds.bbci.co.uk",
+  "www.cnbc.com",
+  "federalreserve.gov",
+  "www.federalreserve.gov",
+  "www.ecb.europa.eu",
+  "www.coindesk.com",
+  "cointelegraph.com",
 ]);
 
 const MAX_CACHE_ENTRIES = 400;
@@ -51,7 +66,6 @@ function getTtlsForTarget(target) {
   if (host === "api.binance.com") return { freshMs: 8_000, staleMs: 3 * 60_000 };
   if (host.includes("financialmodelingprep.com")) return { freshMs: 25_000, staleMs: 20 * 60_000 };
   if (host.endsWith("reddit.com")) return { freshMs: 45_000, staleMs: 20 * 60_000 };
-  if (host === "hn.algolia.com") return { freshMs: 45_000, staleMs: 20 * 60_000 };
   return { freshMs: 15_000, staleMs: 5 * 60_000 };
 }
 

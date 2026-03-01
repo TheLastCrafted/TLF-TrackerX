@@ -39,6 +39,6 @@ export async function fetchTopStockBreadth(limit = 200): Promise<StockBreadthSna
     return data;
   } catch {
     if (cached && now <= cached.staleUntil) return cached.data;
-    return { total: count, up: Math.round(count * 0.55), down: Math.round(count * 0.4), unchanged: Math.max(0, count - Math.round(count * 0.95)) };
+    return { total: 0, up: 0, down: 0, unchanged: 0 };
   }
 }

@@ -5,6 +5,7 @@ import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AppModeProvider } from '@/src/state/app-mode';
+import { AccountProvider } from '@/src/state/account';
 import { CommandCenterProvider } from '@/src/state/command-center';
 import { FinanceToolsProvider } from '@/src/state/finance-tools';
 import { NewsProvider } from '@/src/state/news';
@@ -42,21 +43,23 @@ function RootNavigator() {
 export default function RootLayout() {
   return (
     <SettingsProvider>
-      <WatchlistProvider>
-        <AppModeProvider>
-          <CommandCenterProvider>
-            <PriceAlertProvider>
-              <FinanceToolsProvider>
-                <NewsProvider>
-                  <ResearchNotesProvider>
-                    <RootNavigator />
-                  </ResearchNotesProvider>
-                </NewsProvider>
-              </FinanceToolsProvider>
-            </PriceAlertProvider>
-          </CommandCenterProvider>
-        </AppModeProvider>
-      </WatchlistProvider>
+      <AccountProvider>
+        <WatchlistProvider>
+          <AppModeProvider>
+            <CommandCenterProvider>
+              <PriceAlertProvider>
+                <FinanceToolsProvider>
+                  <NewsProvider>
+                    <ResearchNotesProvider>
+                      <RootNavigator />
+                    </ResearchNotesProvider>
+                  </NewsProvider>
+                </FinanceToolsProvider>
+              </PriceAlertProvider>
+            </CommandCenterProvider>
+          </AppModeProvider>
+        </WatchlistProvider>
+      </AccountProvider>
     </SettingsProvider>
   );
 }

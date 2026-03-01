@@ -5,7 +5,9 @@ import { fetchCoinGeckoMarketChart } from "../../src/data/coingecko";
 import { fetchFredSeries } from "../../src/data/macro";
 import { fetchYahooSeries } from "../../src/data/quotes";
 import { useI18n } from "../../src/i18n/use-i18n";
+import { useSubscriptionAccess } from "../../src/state/subscription-access";
 import { RefreshFeedback, refreshControlProps } from "../../src/ui/refresh-feedback";
+import { SubscriptionLockedScreen } from "../../src/ui/subscription-locked-screen";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -66,6 +68,7 @@ function alignByDay(left: SeriesPoint[], right: SeriesPoint[]): { left: number[]
 export default function CorrelationsScreen() {
   const colors = useAppColors();
   const { t } = useI18n();
+  const { canAccessRoute } = useSubscriptionAccess();
   const [windowDays, setWindowDays] = useState<WindowDays>(90);
   const [loading, setLoading] = useState(false);
   const [manualRefreshing, setManualRefreshing] = useState(false);
@@ -314,6 +317,8 @@ export default function CorrelationsScreen() {
       setManualRefreshing(false);
     }
   }, [recompute]);
+
+  if (!canAccessRoute("correlations")) return <SubscriptionLockedScreen route="correlations" title="Correlations" />;
 
   return (
     <ScrollView

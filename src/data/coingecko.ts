@@ -12,13 +12,17 @@ type RequestJsonOptions = {
 
 const COINGECKO_BASE = "https://api.coingecko.com/api/v3";
 const DEFAULT_TIMEOUT_MS = 4500;
-const COINGECKO_MIN_REQUEST_GAP_MS = 250;
+const COINGECKO_MIN_REQUEST_GAP_MS = 450;
+const COINGECKO_MAX_REQUEST_GAP_MS = 3500;
+const BINANCE_KLINE_LIMIT = 1000;
+const BINANCE_KLINE_TIMEOUT_MS = 5000;
 
 const memoryCache = new Map<string, { expiresAt: number; data: unknown }>();
 const staleCache = new Map<string, { expiresAt: number; data: unknown }>();
 const inflight = new Map<string, Promise<any>>();
 let lastCoinGeckoRequestAt = 0;
 let coinGeckoGate: Promise<void> = Promise.resolve();
+let adaptiveCoinGeckoGapMs = COINGECKO_MIN_REQUEST_GAP_MS;
 const knownBySymbol = new Map<string, string>(TRACKED_COINS.map((coin) => [coin.symbol.toUpperCase(), coin.id]));
 const knownMetaById: Record<string, { symbol: string; name: string }> = Object.fromEntries(
   TRACKED_COINS.map((coin) => [coin.id, { symbol: coin.symbol, name: coin.name }])
@@ -110,11 +114,8 @@ function schedulePersistStale(): void {
 
 function normalizeDays(days: number): number {
   if (days <= 90) return days;
-  if (days <= 365) return 365;
-  if (days <= 1825) return 1825;
-  if (days <= 3650) return 3650;
-  if (days <= 7300) return 7300;
-  return 18250;
+  // Public CoinGecko historical window is currently limited to 365D.
+  return 365;
 }
 
 function trimSeriesToDays(series: XYPoint[], days: number): XYPoint[] {
@@ -122,6 +123,195 @@ function trimSeriesToDays(series: XYPoint[], days: number): XYPoint[] {
   const since = Date.now() - days * 24 * 60 * 60 * 1000;
   const filtered = series.filter((p) => p.x >= since);
   return filtered.length >= 2 ? filtered : series;
+}
+
+const BINANCE_PAIR_BY_COIN_ID: Record<string, string> = {
+  bitcoin: "BTCUSDT",
+  ethereum: "ETHUSDT",
+  solana: "SOLUSDT",
+  ripple: "XRPUSDT",
+  cardano: "ADAUSDT",
+  "binancecoin": "BNBUSDT",
+  dogecoin: "DOGEUSDT",
+  chainlink: "LINKUSDT",
+  avalanche: "AVAXUSDT",
+  polkadot: "DOTUSDT",
+};
+
+const STOOQ_SYMBOL_BY_COIN_ID: Record<string, string> = {
+  bitcoin: "btcusd",
+};
+
+type BinanceDailyKlineRow = { x: number; close: number; quoteVolume: number };
+const binanceRowsCache = new Map<string, { expiresAt: number; rows: BinanceDailyKlineRow[]; oldestTs: number }>();
+const binanceRowsInflight = new Map<string, Promise<BinanceDailyKlineRow[]>>();
+
+function resolveBinancePair(coinId: string): string | null {
+  const explicit = BINANCE_PAIR_BY_COIN_ID[coinId];
+  if (explicit) return explicit;
+  const fallbackSymbol = knownMetaById[coinId]?.symbol?.toUpperCase();
+  if (!fallbackSymbol) return null;
+  return `${fallbackSymbol}USDT`;
+}
+
+async function fetchBinanceDailyKlineRows(opts: { symbol: string; days: number }): Promise<BinanceDailyKlineRow[]> {
+  const cacheKey = opts.symbol.toUpperCase();
+  const neededSince = Date.now() - (Math.max(1, opts.days) + 30) * 24 * 60 * 60 * 1000;
+  const cached = binanceRowsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() && cached.oldestTs <= neededSince) {
+    return cached.rows;
+  }
+  const pending = binanceRowsInflight.get(cacheKey);
+  if (pending) return pending;
+
+  const run = (async () => {
+  const maxPoints = Math.min(5000, Math.max(365, opts.days + 120));
+  const out: BinanceDailyKlineRow[] = [];
+  let endTime = Date.now();
+  while (out.length < maxPoints) {
+    const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(opts.symbol)}&interval=1d&limit=${BINANCE_KLINE_LIMIT}&endTime=${endTime}`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), BINANCE_KLINE_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetchWithWebProxy(url, { headers: { Accept: "application/json" }, signal: ctrl.signal });
+    } catch {
+      clearTimeout(timer);
+      break;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) break;
+    let json: any;
+    try {
+      json = await res.json();
+    } catch {
+      break;
+    }
+    const rows = Array.isArray(json) ? json : [];
+    if (!rows.length) break;
+    for (const row of rows) {
+      const openTime = Number(row?.[0]);
+      const close = Number(row?.[4]);
+      const quoteVolume = Number(row?.[7]);
+      if (!Number.isFinite(openTime) || !Number.isFinite(close)) continue;
+      out.push({ x: openTime, close, quoteVolume: Number.isFinite(quoteVolume) ? quoteVolume : 0 });
+    }
+    const firstTs = Number(rows[0]?.[0]);
+    if (!Number.isFinite(firstTs) || rows.length < BINANCE_KLINE_LIMIT) break;
+    endTime = firstTs - 1;
+  }
+
+  if (!out.length) return [];
+  const deduped = new Map<number, BinanceDailyKlineRow>();
+  for (const row of out) deduped.set(row.x, row);
+  const rows = Array.from(deduped.entries())
+    .map(([, row]) => row)
+    .sort((a, b) => a.x - b.x);
+  binanceRowsCache.set(cacheKey, {
+    rows,
+    oldestTs: rows[0]?.x ?? Date.now(),
+    expiresAt: Date.now() + 20 * 60_000,
+  });
+  return rows;
+  })();
+
+  binanceRowsInflight.set(cacheKey, run);
+  try {
+    return await run;
+  } finally {
+    binanceRowsInflight.delete(cacheKey);
+  }
+}
+
+async function fetchBinanceDailyKlines(opts: { symbol: string; days: number }): Promise<XYPoint[]> {
+  const rows = await fetchBinanceDailyKlineRows(opts);
+  return trimSeriesToDays(rows.map((row) => ({ x: row.x, y: row.close })), opts.days);
+}
+
+async function fetchBinanceDailyQuoteVolume(opts: { symbol: string; days: number }): Promise<XYPoint[]> {
+  const rows = await fetchBinanceDailyKlineRows(opts);
+  return trimSeriesToDays(rows
+    .map((row) => ({ x: row.x, y: row.quoteVolume }))
+    .filter((row) => Number.isFinite(row.y) && row.y > 0), opts.days);
+}
+
+async function fetchStooqDailyCloseSeries(opts: { symbol: string; days: number }): Promise<XYPoint[]> {
+  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(opts.symbol)}&i=d`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5500);
+  let res: Response;
+  try {
+    res = await fetchWithWebProxy(url, { headers: { Accept: "text/csv" }, signal: ctrl.signal });
+  } catch {
+    clearTimeout(timer);
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) return [];
+  let text = "";
+  try {
+    text = await res.text();
+  } catch {
+    return [];
+  }
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (lines.length <= 1) return [];
+  const out: XYPoint[] = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const cols = lines[i].split(",");
+    if (cols.length < 5) continue;
+    const x = Date.parse(`${cols[0]}T00:00:00Z`);
+    const y = Number(cols[4]);
+    if (Number.isFinite(x) && Number.isFinite(y)) out.push({ x, y });
+  }
+  out.sort((a, b) => a.x - b.x);
+  return trimSeriesToDays(out, opts.days);
+}
+
+async function fetchAlternativeCryptoSeries(opts: {
+  coinId: string;
+  vsCurrency: string;
+  days: number;
+  metric: "prices" | "market_caps" | "total_volumes";
+}): Promise<XYPoint[]> {
+  const pair = resolveBinancePair(opts.coinId);
+  if (opts.metric === "prices") {
+    if (pair) {
+      const binanceRows = await fetchBinanceDailyKlines({ symbol: pair, days: opts.days });
+      if (binanceRows.length >= 2) return trimSeriesToDays(binanceRows, opts.days);
+    }
+    const stooqSymbol = STOOQ_SYMBOL_BY_COIN_ID[opts.coinId];
+    if (stooqSymbol) {
+      const stooqRows = await fetchStooqDailyCloseSeries({ symbol: stooqSymbol, days: opts.days });
+      if (stooqRows.length >= 2) return stooqRows;
+    }
+    return [];
+  }
+
+  if (opts.metric === "total_volumes") {
+    if (!pair) return [];
+    const binanceVol = await fetchBinanceDailyQuoteVolume({ symbol: pair, days: opts.days });
+    return trimSeriesToDays(binanceVol, opts.days);
+  }
+
+  const priceSeries = await fetchAlternativeCryptoSeries({
+    coinId: opts.coinId,
+    vsCurrency: opts.vsCurrency,
+    days: opts.days,
+    metric: "prices",
+  });
+  if (priceSeries.length < 2) return [];
+  const snapshot = await fetchCoinGeckoSimpleSnapshot({
+    coinId: opts.coinId,
+    vsCurrency: opts.vsCurrency,
+  });
+  const latestAltPrice = priceSeries[priceSeries.length - 1]?.y ?? 0;
+  const denom = snapshot.price > 0 ? snapshot.price : latestAltPrice;
+  const inferredSupply = denom > 0 && snapshot.marketCap > 0 ? snapshot.marketCap / denom : 0;
+  if (!(inferredSupply > 0)) return [];
+  return priceSeries.map((row) => ({ x: row.x, y: row.y * inferredSupply }));
 }
 
 async function requestJson(url: string, opts: RequestJsonOptions = {}): Promise<any | null> {
@@ -133,7 +323,7 @@ async function requestJson(url: string, opts: RequestJsonOptions = {}): Promise<
   async function waitForCoinGeckoSlot(): Promise<void> {
     coinGeckoGate = coinGeckoGate.then(async () => {
       const elapsed = Date.now() - lastCoinGeckoRequestAt;
-      const waitMs = Math.max(0, COINGECKO_MIN_REQUEST_GAP_MS - elapsed);
+      const waitMs = Math.max(0, adaptiveCoinGeckoGapMs - elapsed);
       if (waitMs > 0) await sleep(waitMs);
       lastCoinGeckoRequestAt = Date.now();
     });
@@ -158,6 +348,10 @@ async function requestJson(url: string, opts: RequestJsonOptions = {}): Promise<
       });
 
       if (res.ok) {
+        adaptiveCoinGeckoGapMs = Math.max(
+          COINGECKO_MIN_REQUEST_GAP_MS,
+          Math.floor(adaptiveCoinGeckoGapMs * 0.92)
+        );
         const json = await res.json();
         if (opts.staleKey) {
           setStale(opts.staleKey, json, opts.staleTtlMs ?? 10 * 60_000);
@@ -166,6 +360,12 @@ async function requestJson(url: string, opts: RequestJsonOptions = {}): Promise<
       }
 
       const retryAfterSeconds = Number(res.headers.get("retry-after") ?? "0") || 0;
+      if (res.status === 429) {
+        adaptiveCoinGeckoGapMs = Math.min(
+          COINGECKO_MAX_REQUEST_GAP_MS,
+          Math.max(1200, Math.floor(adaptiveCoinGeckoGapMs * 1.7))
+        );
+      }
       const shouldRetry = (res.status === 429 || res.status >= 500) && attempt < retries;
 
       if (!shouldRetry) {
@@ -183,6 +383,10 @@ async function requestJson(url: string, opts: RequestJsonOptions = {}): Promise<
         : 600 * Math.pow(2, attempt) + Math.floor(Math.random() * 250);
       await sleep(backoffMs);
     } catch (err) {
+      adaptiveCoinGeckoGapMs = Math.min(
+        COINGECKO_MAX_REQUEST_GAP_MS,
+        Math.max(COINGECKO_MIN_REQUEST_GAP_MS, Math.floor(adaptiveCoinGeckoGapMs * 1.2))
+      );
       const shouldRetry = attempt < retries;
       if (stale) return stale;
       if (!shouldRetry) {
@@ -214,6 +418,18 @@ export async function fetchCoinGeckoMarketChart(opts: {
   days: number;
   metric?: "prices" | "market_caps" | "total_volumes";
 }): Promise<XYPoint[]> {
+  const seriesKey = opts.metric ?? "prices";
+  const wantsLongRange = opts.days > 365;
+  if (wantsLongRange) {
+    const altLongRange = await fetchAlternativeCryptoSeries({
+      coinId: opts.coinId,
+      vsCurrency: opts.vsCurrency,
+      days: opts.days,
+      metric: seriesKey,
+    });
+    if (altLongRange.length >= 2) return trimSeriesToDays(altLongRange, opts.days);
+  }
+
   const bucketDays = normalizeDays(opts.days);
   const url =
     `${COINGECKO_BASE}/coins/${encodeURIComponent(opts.coinId)}/market_chart` +
@@ -235,12 +451,65 @@ export async function fetchCoinGeckoMarketChart(opts: {
 
   if (!json) return [];
   setCached(cacheKey, json, 3 * 60_000);
-  const seriesKey = opts.metric ?? "prices";
   const mapped = (json[seriesKey] ?? [])
     .map((p: any) => ({ x: Number(p[0]), y: Number(p[1]) }))
     .filter((p: XYPoint) => Number.isFinite(p.x) && Number.isFinite(p.y))
     .sort((a: XYPoint, b: XYPoint) => a.x - b.x);
+  if (mapped.length >= 2) return trimSeriesToDays(mapped, opts.days);
+
+  const altSeries = await fetchAlternativeCryptoSeries({
+    coinId: opts.coinId,
+    vsCurrency: opts.vsCurrency,
+    days: opts.days,
+    metric: seriesKey,
+  });
+  if (altSeries.length >= 2) {
+    return trimSeriesToDays(altSeries, opts.days);
+  }
   return trimSeriesToDays(mapped, opts.days);
+}
+
+type CoinGeckoSimpleSnapshot = {
+  price: number;
+  marketCap: number;
+  volume24h: number;
+};
+
+async function fetchCoinGeckoSimpleSnapshot(opts: {
+  coinId: string;
+  vsCurrency: string;
+}): Promise<CoinGeckoSimpleSnapshot> {
+  const currency = opts.vsCurrency.toLowerCase();
+  const cacheKey = `simple_snapshot:${opts.coinId}:${currency}`;
+  const fresh = getCached<CoinGeckoSimpleSnapshot>(cacheKey);
+  if (fresh) return fresh;
+  const stale = getStale<CoinGeckoSimpleSnapshot>(cacheKey);
+
+  const url =
+    `${COINGECKO_BASE}/simple/price` +
+    `?ids=${encodeURIComponent(opts.coinId)}` +
+    `&vs_currencies=${encodeURIComponent(currency)}` +
+    `&include_market_cap=true` +
+    `&include_24hr_vol=true`;
+  const json = await requestJson(url, {
+    retries: 1,
+    timeoutMs: 8000,
+    staleKey: cacheKey,
+    staleTtlMs: 20 * 60_000,
+  }) ?? stale;
+
+  const row = json?.[opts.coinId] ?? {};
+  const snapshot: CoinGeckoSimpleSnapshot = {
+    price: Number(row?.[currency]) || 0,
+    marketCap: Number(row?.[`${currency}_market_cap`]) || 0,
+    volume24h: Number(row?.[`${currency}_24h_vol`]) || 0,
+  };
+  if (snapshot.price > 0 || snapshot.marketCap > 0 || snapshot.volume24h > 0) {
+    setCached(cacheKey, snapshot, 5 * 60_000);
+    setStale(cacheKey, snapshot, 24 * 60 * 60_000);
+    return snapshot;
+  }
+  return fresh ?? stale ?? { price: 0, marketCap: 0, volume24h: 0 };
 }
 
 export type CoinMarket = {

@@ -14,10 +14,12 @@ import { mapRowsToPortfolioTransactions, pickLocalImportFile, readImportRowsFrom
 import { usePriceAlerts } from "../../src/state/price-alerts";
 import { useFinanceTools } from "../../src/state/finance-tools";
 import { useSettings } from "../../src/state/settings";
+import { useSubscriptionAccess } from "../../src/state/subscription-access";
 import { FormInput } from "../../src/ui/form-input";
 import { ActionButton } from "../../src/ui/action-button";
 import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { RefreshFeedback, refreshControlProps } from "../../src/ui/refresh-feedback";
+import { SubscriptionLockedScreen } from "../../src/ui/subscription-locked-screen";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -76,6 +78,7 @@ const COMMON_COINGECKO_BY_SYMBOL: Record<string, string> = {
 
 export default function PortfolioScreen() {
   const insets = useSafeAreaInsets();
+  const { canAccessRoute } = useSubscriptionAccess();
   const { holdings, transactions, addHolding, updateHolding, removeHolding, addTransaction, removeTransaction } = useFinanceTools();
   const { settings } = useSettings();
   const colors = useAppColors();
@@ -372,7 +375,6 @@ export default function PortfolioScreen() {
         symbol: holding.symbol,
         name: holding.name,
         coinGeckoId: holding.coinGeckoId || catalogAsset?.coinGeckoId,
-        defaultPrice: catalogAsset?.defaultPrice,
       };
       const holdingCostCurrency = normalizeCurrency(holding.costCurrency) ?? settings.currency;
       const isLivePrice = asset.kind === "crypto"
@@ -381,7 +383,7 @@ export default function PortfolioScreen() {
       const quoteSymbol = (holding.quoteSymbol || asset.symbol).toUpperCase();
       const marketPriceRaw = asset.kind === "crypto"
         ? (asset.coinGeckoId ? cryptoPrices[asset.coinGeckoId] : undefined)
-        : equityPrices[quoteSymbol] ?? holding.manualPrice ?? asset.defaultPrice;
+        : equityPrices[quoteSymbol] ?? holding.manualPrice;
       const marketCurrency = asset.kind === "crypto" ? settings.currency : (equityPriceCurrency[quoteSymbol] ?? settings.currency);
       const avgCostDisplay = convertCurrencyAmount(holding.avgCost, holdingCostCurrency, settings.currency, usdPerEur);
       const marketPrice = Number.isFinite(marketPriceRaw ?? NaN)
@@ -520,6 +522,8 @@ export default function PortfolioScreen() {
       setImportBusy(false);
     }
   };
+
+  if (!canAccessRoute("portfolio")) return <SubscriptionLockedScreen route="portfolio" title="Portfolio" />;
 
   return (
     <ScrollView
@@ -1179,7 +1183,9 @@ export default function PortfolioScreen() {
                       <Text numberOfLines={2} style={{ color: colors.text, fontWeight: "800", flex: 1 }}>{row.asset?.symbol} • {row.asset?.name}</Text>
                       <ActionButton label={t("Remove", "Entfernen")} onPress={() => removeHolding(row.holding.id)} style={{ minWidth: 76, paddingHorizontal: 10 }} />
                     </View>
-                    <Text style={{ color: colors.subtext, marginTop: 4 }}>{t("Qty", "Menge")} {row.holding.quantity} • {t("Avg", "Durchschn.")} {toMoney(row.avgCostDisplay, settings.currency, settings.language)} • {t("Market", "Markt")} {toMoney(row.marketPrice ?? 0, settings.currency, settings.language)}</Text>
+                    <Text style={{ color: colors.subtext, marginTop: 4 }}>
+                      {t("Qty", "Menge")} {row.holding.quantity} • {t("Avg", "Durchschn.")} {toMoney(row.avgCostDisplay, settings.currency, settings.language)} • {t("Market", "Markt")} {row.marketPrice == null ? "-" : toMoney(row.marketPrice, settings.currency, settings.language)}
+                    </Text>
                     <Text style={{ color: row.pnl >= 0 ? "#5CE0AB" : "#FF8497", marginTop: 4, fontWeight: "700" }}>{t("Value", "Wert")} {toMoney(row.value, settings.currency, settings.language)} • {t("PnL", "P&L")} {toMoney(row.pnl, settings.currency, settings.language)} ({pct(row.pnlPct)})</Text>
                     <Text style={{ color: colors.subtext, marginTop: 2, fontSize: 12 }}>
                       Allocation {totalValue > 0 ? `${((row.value / totalValue) * 100).toFixed(2)}%` : "-"} • Cost Basis {toMoney(row.cost, settings.currency, settings.language)}

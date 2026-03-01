@@ -21,7 +21,7 @@ export default function DataSourcesScreen() {
       </LegalCard>
 
       <LegalCard title={t("News data", "News-Daten")}>
-        <LegalBullet>{t("Primary feeds: public Reddit category streams and Hacker News search feed.", "Primaere Feeds: oeffentliche Reddit-Kategorie-Streams und Hacker-News-Suchfeed.")}</LegalBullet>
+        <LegalBullet>{t("Primary feeds: mixed category sources (Google News RSS, selected finance/news RSS feeds, and public Reddit category streams).", "Primaere Feeds: gemischte Kategoriequellen (Google-News-RSS, ausgewaehlte Finanz-/News-RSS-Feeds und oeffentliche Reddit-Kategorie-Streams).")}</LegalBullet>
         <LegalBullet>{t("Article body previews are fetched from source links when available and allowed.", "Artikelvorschauen werden bei verfuegbarer/erlaubter Quelle aus dem Link geladen.")}</LegalBullet>
         <LegalBullet>{t("Image quality and availability depend on source-side hosting and restrictions.", "Bildqualitaet und Verfuegbarkeit haengen vom Quell-Hosting und dessen Restriktionen ab.")}</LegalBullet>
       </LegalCard>

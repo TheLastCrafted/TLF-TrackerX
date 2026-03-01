@@ -6,6 +6,8 @@ import { searchUniversalAssets, UniversalAsset } from "../../src/data/asset-sear
 import { FormInput } from "../../src/ui/form-input";
 import { ActionButton } from "../../src/ui/action-button";
 import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
+import { useSubscriptionAccess } from "../../src/state/subscription-access";
+import { SubscriptionLockedScreen } from "../../src/ui/subscription-locked-screen";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -35,6 +37,7 @@ type StrategyAsset = {
 export default function StrategyScreen() {
   const insets = useSafeAreaInsets();
   const colors = useAppColors();
+  const { canAccessRoute } = useSubscriptionAccess();
   const [compactHeader, setCompactHeader] = useState(false);
   const [showCoreInputs, setShowCoreInputs] = useState(true);
   const [showAllocInputs, setShowAllocInputs] = useState(false);
@@ -168,6 +171,8 @@ export default function StrategyScreen() {
       value: projectFutureValue(parsed.initial, parsed.monthly, Math.max(weightedReturnPct, 2) / 100, year),
     }));
   }, [parsed, weightedReturnPct]);
+
+  if (!canAccessRoute("strategy")) return <SubscriptionLockedScreen route="strategy" title="Strategy" />;
 
   return (
     <ScrollView

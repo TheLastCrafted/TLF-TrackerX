@@ -1,4 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { useIsFocused } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -53,6 +54,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: 
 
 export default function WatchlistScreen() {
   const router = useRouter();
+  const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
   const { settings } = useSettings();
   const { chartIds, coinIds, equitySymbols, toggleChart, toggleCoin, toggleEquity } = useWatchlist();
@@ -148,10 +150,12 @@ export default function WatchlistScreen() {
     [equitySymbols]
   );
 
-  const loadSavedRows = useCallback(async () => {
+  const loadSavedRows = useCallback(async (opts?: { forceNetwork?: boolean; showLoader?: boolean }) => {
+    const forceNetwork = opts?.forceNetwork ?? false;
+    const showLoader = opts?.showLoader ?? true;
     const mergedIds = Array.from(new Set([...coinIds, ...savedChartCoinIds])).filter(Boolean);
     try {
-      setLoading(true);
+      if (showLoader) setLoading(true);
       setLoadNote(null);
       const [coinRows, equityRows] = await Promise.all([
         mergedIds.length
@@ -159,8 +163,8 @@ export default function WatchlistScreen() {
               fetchCoinGeckoMarkets({
                 ids: mergedIds,
                 vsCurrency: settings.currency.toLowerCase() as "usd" | "eur",
-                useCache: true,
-                cacheTtlMs: 20_000,
+                useCache: !forceNetwork,
+                cacheTtlMs: forceNetwork ? 8_000 : 20_000,
               }),
               4_500,
               [] as CoinMarket[]
@@ -168,7 +172,7 @@ export default function WatchlistScreen() {
           : Promise.resolve([]),
           equitySymbols.length
             ? withTimeout(
-              fetchStockQuoteSnapshot(equitySymbols, { useCache: true, cacheTtlMs: 20_000, enrich: false }),
+              fetchStockQuoteSnapshot(equitySymbols, { useCache: !forceNetwork, cacheTtlMs: forceNetwork ? 8_000 : 20_000, enrich: true }),
               4_000,
               [] as StockMarketRow[]
             )
@@ -176,7 +180,7 @@ export default function WatchlistScreen() {
       ]);
       const topUniverseRows =
         equitySymbols.length > 0
-          ? await withTimeout(fetchTopStocks({ count: 220, useCache: true, cacheTtlMs: 45_000 }), 4_000, [] as StockMarketRow[])
+          ? await withTimeout(fetchTopStocks({ count: 220, useCache: !forceNetwork, cacheTtlMs: forceNetwork ? 8_000 : 45_000 }), 4_000, [] as StockMarketRow[])
           : [];
       const mergedEquities = mergeEquityWithUniverse(equityRows, topUniverseRows);
       if (!mergedIds.length) setCoins([]);
@@ -198,7 +202,7 @@ export default function WatchlistScreen() {
 
       // On native we run a non-blocking network revalidation.
       // On web this can easily trigger upstream 429s, so we skip it.
-      if (Platform.OS === "web") {
+      if (Platform.OS === "web" || forceNetwork) {
         return;
       }
 
@@ -217,7 +221,7 @@ export default function WatchlistScreen() {
               )
             : Promise.resolve([]),
           equitySymbols.length
-            ? withTimeout(fetchStockQuoteSnapshot(equitySymbols, { useCache: false, enrich: false }), 8_000, [] as StockMarketRow[])
+            ? withTimeout(fetchStockQuoteSnapshot(equitySymbols, { useCache: false, enrich: true }), 8_000, [] as StockMarketRow[])
             : Promise.resolve([]),
         ]);
         const topFresh =
@@ -231,18 +235,32 @@ export default function WatchlistScreen() {
         if (coinFresh.length || mergedFreshEquities.length) setLoadNote(null);
       })();
     } finally {
-      setLoading(false);
+      if (showLoader) setLoading(false);
     }
   }, [coinIds, equitySymbols, mergeEquityWithUniverse, savedChartCoinIds, settings.currency, t]);
 
   useEffect(() => {
-    void loadSavedRows();
-  }, [loadSavedRows]);
+    if (!isFocused) return;
+    void loadSavedRows({ showLoader: true });
+  }, [isFocused, loadSavedRows]);
+
+  useEffect(() => {
+    if (!isFocused) return;
+    if (!settings.autoRefresh) return;
+    if (!coinIds.length && !equitySymbols.length) return;
+
+    const everyMs = Math.max(Platform.OS === "web" ? 15 : 8, settings.refreshSeconds) * 1000;
+    const timer = setInterval(() => {
+      void loadSavedRows({ forceNetwork: true, showLoader: false });
+    }, everyMs);
+
+    return () => clearInterval(timer);
+  }, [coinIds.length, equitySymbols.length, isFocused, loadSavedRows, settings.autoRefresh, settings.refreshSeconds]);
 
   const onManualRefresh = useCallback(async () => {
     setManualRefreshing(true);
     try {
-      await loadSavedRows();
+      await loadSavedRows({ forceNetwork: true, showLoader: false });
     } finally {
       setManualRefreshing(false);
     }

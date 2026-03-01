@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "expo-router";
-import { Image, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { Image, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -19,6 +19,51 @@ type LocalizedSnippet = {
   title: string;
   summary: string;
 };
+
+type RegionFocus = "all" | "us" | "eu";
+
+const US_REGION_HINTS = [
+  " united states",
+  " us ",
+  " usa",
+  "u.s.",
+  "federal reserve",
+  "fed ",
+  "treasury",
+  "wall street",
+  "dow",
+  "nasdaq",
+  "s&p 500",
+  "nyse",
+  "washington",
+  "new york",
+];
+
+const EU_REGION_HINTS = [
+  " european",
+  " eurozone",
+  " eu ",
+  "e.u.",
+  "ecb",
+  "brussels",
+  "bund",
+  "dax",
+  "stoxx",
+  "france",
+  "germany",
+  "italy",
+  "spain",
+  "netherlands",
+  "euro ",
+  "eur ",
+];
+
+function matchesRegion(row: NewsArticle, focus: RegionFocus): boolean {
+  if (focus === "all") return true;
+  const text = `${row.title} ${row.summary} ${row.source} ${row.link}`.toLowerCase();
+  if (focus === "us") return US_REGION_HINTS.some((hint) => text.includes(hint));
+  return EU_REGION_HINTS.some((hint) => text.includes(hint));
+}
 
 export default function NewsScreen() {
   const router = useRouter();
@@ -41,6 +86,8 @@ export default function NewsScreen() {
   const [compactHeader, setCompactHeader] = useState(false);
   const [ageFilter, setAgeFilter] = useState<"all" | "24h" | "7d">("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
+  const [regionFocus, setRegionFocus] = useState<RegionFocus>("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [localizedSnippets, setLocalizedSnippets] = useState<Record<string, LocalizedSnippet>>({});
   const localizedRef = useRef<Record<string, LocalizedSnippet>>({});
   const scrollRef = useRef<ScrollView>(null);
@@ -48,10 +95,10 @@ export default function NewsScreen() {
     scrollRef.current?.scrollTo({ y: 0, animated: true });
   });
 
-  const run = useCallback(async () => {
+  const run = useCallback(async (opts?: { force?: boolean }) => {
     setLoading(true);
     try {
-      const items = await fetchNewsByCategory(category);
+      const items = await fetchNewsByCategory(category, opts);
       setRows(items);
       saveMany(items);
     } catch {
@@ -76,7 +123,7 @@ export default function NewsScreen() {
   const onManualRefresh = useCallback(async () => {
     setManualRefreshing(true);
     try {
-      await run();
+      await run({ force: true });
     } finally {
       setManualRefreshing(false);
     }
@@ -86,8 +133,13 @@ export default function NewsScreen() {
     setSourceFilter("all");
   }, [category]);
 
+  useEffect(() => {
+    setRegionFocus("all");
+  }, [category]);
+
   const filteredRows = useMemo(() => {
     const now = Date.now();
+    const q = searchQuery.trim().toLowerCase();
     return rows.filter((row) => {
       if (ageFilter === "all") return true;
       const ts = new Date(row.pubDate).getTime();
@@ -95,8 +147,23 @@ export default function NewsScreen() {
       const delta = now - ts;
       if (ageFilter === "24h") return delta <= 24 * 60 * 60 * 1000;
       return delta <= 7 * 24 * 60 * 60 * 1000;
-    }).filter((row) => (sourceFilter === "all" ? true : row.source === sourceFilter));
-  }, [rows, ageFilter, sourceFilter]);
+    })
+      .filter((row) => (sourceFilter === "all" ? true : row.source === sourceFilter))
+      .filter((row) => matchesRegion(row, regionFocus))
+      .filter((row) => {
+        if (!q) return true;
+        const title = row.title.toLowerCase();
+        const summary = row.summary.toLowerCase();
+        const source = row.source.toLowerCase();
+        return title.includes(q) || summary.includes(q) || source.includes(q);
+      });
+  }, [rows, ageFilter, regionFocus, searchQuery, sourceFilter]);
+
+  const regionCounts = useMemo(() => {
+    const us = rows.filter((row) => matchesRegion(row, "us")).length;
+    const eu = rows.filter((row) => matchesRegion(row, "eu")).length;
+    return { us, eu };
+  }, [rows]);
 
   const topSources = useMemo(() => {
     const counts = new Map<string, number>();
@@ -268,6 +335,77 @@ export default function NewsScreen() {
               </Pressable>
             );
           })}
+        </View>
+
+        <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
+          <Pressable
+            onPress={() => setRegionFocus("all")}
+            style={({ pressed }) => ({
+              flex: 1,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: regionFocus === "all" ? colors.accentBorder : colors.border,
+              backgroundColor: pressed ? colors.accentSoft : regionFocus === "all" ? colors.accentSoft : colors.surface,
+              paddingHorizontal: 10,
+              paddingVertical: 9,
+            })}
+          >
+            <Text style={{ color: regionFocus === "all" ? colors.accent : colors.text, fontWeight: "800", fontSize: 12 }}>
+              {t("All Regions", "Alle Regionen")} • {rows.length}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setRegionFocus("us")}
+            style={({ pressed }) => ({
+              flex: 1,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: regionFocus === "us" ? colors.accentBorder : colors.border,
+              backgroundColor: pressed ? colors.accentSoft : regionFocus === "us" ? colors.accentSoft : colors.surface,
+              paddingHorizontal: 10,
+              paddingVertical: 9,
+            })}
+          >
+            <Text style={{ color: regionFocus === "us" ? colors.accent : colors.text, fontWeight: "800", fontSize: 12 }}>
+              {t("US Focus", "US Fokus")} • {regionCounts.us}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setRegionFocus("eu")}
+            style={({ pressed }) => ({
+              flex: 1,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: regionFocus === "eu" ? colors.accentBorder : colors.border,
+              backgroundColor: pressed ? colors.accentSoft : regionFocus === "eu" ? colors.accentSoft : colors.surface,
+              paddingHorizontal: 10,
+              paddingVertical: 9,
+            })}
+          >
+            <Text style={{ color: regionFocus === "eu" ? colors.accent : colors.text, fontWeight: "800", fontSize: 12 }}>
+              {t("EU Focus", "EU Fokus")} • {regionCounts.eu}
+            </Text>
+          </Pressable>
+        </View>
+
+        <View
+          style={{
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: colors.border,
+            backgroundColor: colors.surface,
+            paddingHorizontal: 10,
+            paddingVertical: 8,
+            marginBottom: 10,
+          }}
+        >
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder={t("Search headlines, source, or topic", "Schlagzeilen, Quelle oder Thema suchen")}
+            placeholderTextColor={colors.subtext}
+            style={{ color: colors.text, fontWeight: "600" }}
+          />
         </View>
 
         {!!hero && (

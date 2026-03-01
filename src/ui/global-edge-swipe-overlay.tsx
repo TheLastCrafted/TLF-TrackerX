@@ -132,12 +132,15 @@ export function GlobalEdgeSwipeOverlay() {
         onStartShouldSetPanResponder: (evt) => canGoBack && evt.nativeEvent.pageX <= EDGE_WIDTH,
         onMoveShouldSetPanResponder: (_evt, g) => canGoBack && g.dx > 10 && Math.abs(g.dy) < 24,
         onPanResponderGrant: (evt) => {
-          leftLockedYRef.current = evt.nativeEvent.pageY;
-          setLeftEdgeY(evt.nativeEvent.pageY);
+          const y = Math.max(24, Math.min(screenHeight - 24, evt.nativeEvent.pageY));
+          leftLockedYRef.current = y;
+          setLeftEdgeY(y);
         },
-        onPanResponderMove: (_evt, g) => {
+        onPanResponderMove: (evt, g) => {
           const dx = Math.max(0, g.dx);
           leftDxRef.current = dx;
+          const y = Math.max(24, Math.min(screenHeight - 24, evt.nativeEvent.pageY));
+          setLeftEdgeY(y);
           leftProgress.setValue(Math.max(0, Math.min(1, dx / SWIPE_PROGRESS_DISTANCE)));
         },
         onPanResponderRelease: () => {
@@ -160,7 +163,7 @@ export function GlobalEdgeSwipeOverlay() {
           animateTo(leftProgress, 0, 130);
         },
       }),
-    [animateTo, canGoBack, goHistory, haptic, leftProgress]
+    [animateTo, canGoBack, goHistory, haptic, leftProgress, screenHeight]
   );
 
   const rightPan = useMemo(
@@ -169,12 +172,15 @@ export function GlobalEdgeSwipeOverlay() {
         onStartShouldSetPanResponder: (evt) => canGoForward && evt.nativeEvent.pageX >= screenWidth - EDGE_WIDTH,
         onMoveShouldSetPanResponder: (_evt, g) => canGoForward && g.dx < -10 && Math.abs(g.dy) < 24,
         onPanResponderGrant: (evt) => {
-          rightLockedYRef.current = evt.nativeEvent.pageY;
-          setRightEdgeY(evt.nativeEvent.pageY);
+          const y = Math.max(24, Math.min(screenHeight - 24, evt.nativeEvent.pageY));
+          rightLockedYRef.current = y;
+          setRightEdgeY(y);
         },
-        onPanResponderMove: (_evt, g) => {
+        onPanResponderMove: (evt, g) => {
           const dx = Math.max(0, -g.dx);
           rightDxRef.current = dx;
+          const y = Math.max(24, Math.min(screenHeight - 24, evt.nativeEvent.pageY));
+          setRightEdgeY(y);
           rightProgress.setValue(Math.max(0, Math.min(1, dx / SWIPE_PROGRESS_DISTANCE)));
         },
         onPanResponderRelease: () => {
@@ -197,7 +203,7 @@ export function GlobalEdgeSwipeOverlay() {
           animateTo(rightProgress, 0, 130);
         },
       }),
-    [animateTo, canGoForward, goHistory, haptic, rightProgress, screenWidth]
+    [animateTo, canGoForward, goHistory, haptic, rightProgress, screenHeight, screenWidth]
   );
 
   const leftOpacity = leftProgress.interpolate({ inputRange: [0, 1], outputRange: [0, 0.95] });
@@ -232,7 +238,7 @@ export function GlobalEdgeSwipeOverlay() {
         style={{
           position: "absolute",
           left: 0,
-          bottom: Math.max(0, screenHeight - Math.max(24, leftEdgeY) - 28),
+          top: Math.max(14, Math.min(screenHeight - 70, leftEdgeY - 28)),
           width: 56,
           height: 56,
           opacity: leftOpacity,
@@ -254,7 +260,7 @@ export function GlobalEdgeSwipeOverlay() {
         style={{
           position: "absolute",
           right: 0,
-          bottom: Math.max(0, screenHeight - Math.max(24, rightEdgeY) - 28),
+          top: Math.max(14, Math.min(screenHeight - 70, rightEdgeY - 28)),
           width: 56,
           height: 56,
           opacity: rightOpacity,

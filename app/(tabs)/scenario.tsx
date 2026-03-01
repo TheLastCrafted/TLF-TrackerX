@@ -3,6 +3,8 @@ import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 
 import { FINANCIAL_ASSETS, FinancialAsset, FinancialAssetKind } from "../../src/catalog/financial-assets";
 import { useI18n } from "../../src/i18n/use-i18n";
+import { useSubscriptionAccess } from "../../src/state/subscription-access";
+import { SubscriptionLockedScreen } from "../../src/ui/subscription-locked-screen";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -54,6 +56,7 @@ function estimateReaction(asset: FinancialAsset, cpi: number, fed: number, yld: 
 export default function ScenarioScreen() {
   const colors = useAppColors();
   const { t } = useI18n();
+  const { canAccessRoute } = useSubscriptionAccess();
   const [cpiShock, setCpiShock] = useState("0.5");
   const [fedShock, setFedShock] = useState("25");
   const [yieldShock, setYieldShock] = useState("35");
@@ -98,6 +101,8 @@ export default function ScenarioScreen() {
       .filter((asset) => asset.symbol.toLowerCase().includes(q) || asset.name.toLowerCase().includes(q))
       .slice(0, 12);
   }, [assetQuery, selectedAssets]);
+
+  if (!canAccessRoute("scenario")) return <SubscriptionLockedScreen route="scenario" title="Scenario" />;
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingBottom: 118 }}>

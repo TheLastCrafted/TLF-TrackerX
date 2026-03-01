@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ActionButton } from "../../src/ui/action-button";
@@ -9,6 +9,7 @@ import type { DebtEntry } from "../../src/state/finance-tools";
 import { useI18n } from "../../src/i18n/use-i18n";
 import { useSettings } from "../../src/state/settings";
 import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
+import { SimpleSeriesChart } from "../../src/ui/simple-series-chart";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -22,6 +23,11 @@ type DebtPayoffPoint = {
   remaining: number;
 };
 
+type DebtBalancePoint = {
+  month: number;
+  remaining: number;
+};
+
 type DebtSimulation = {
   months: number;
   totalInterest: number;
@@ -30,6 +36,7 @@ type DebtSimulation = {
   stalled: boolean;
   debtFreeDateLabel: string;
   payoffTimeline: DebtPayoffPoint[];
+  balanceSeries: DebtBalancePoint[];
 };
 
 const MAX_SIM_MONTHS = 600;
@@ -45,6 +52,35 @@ function addMonths(start: Date, months: number) {
 function toMoney(value: number, currency: "USD" | "EUR", language: "en" | "de") {
   if (!Number.isFinite(value)) return "-";
   return new Intl.NumberFormat(language, { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
+}
+
+function parseLocaleNumber(raw: string): number {
+  const txt = String(raw ?? "").trim();
+  if (!txt) return NaN;
+  const negative = txt.includes("(") && txt.includes(")");
+  const cleaned = txt
+    .replace(/[()]/g, "")
+    .replace(/[^\d,.\-]/g, "")
+    .replace(/(?!^)-/g, "");
+
+  if (!cleaned) return NaN;
+  const comma = cleaned.lastIndexOf(",");
+  const dot = cleaned.lastIndexOf(".");
+  let normalized = cleaned;
+  if (comma > -1 && dot > -1) {
+    if (comma > dot) {
+      normalized = cleaned.replace(/\./g, "").replace(",", ".");
+    } else {
+      normalized = cleaned.replace(/,/g, "");
+    }
+  } else if (comma > -1 && dot === -1) {
+    normalized = cleaned.replace(",", ".");
+  } else {
+    normalized = cleaned.replace(/,/g, "");
+  }
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) return NaN;
+  return negative ? -Math.abs(parsed) : parsed;
 }
 
 function orderOpenDebts(rows: DebtEntry[], method: DebtMethod): DebtEntry[] {
@@ -76,10 +112,13 @@ function simulateDebts(
       stalled: false,
       debtFreeDateLabel: language === "de" ? "Keine Schulden hinterlegt" : "No debts added",
       payoffTimeline: [],
+      balanceSeries: [],
     };
   }
 
   const working = debts.map((row) => ({ ...row, balance: Math.max(0, row.balance) }));
+  const initialOutstanding = working.reduce((sum, row) => sum + row.balance, 0);
+  const balanceSeries: DebtBalancePoint[] = [{ month: 0, remaining: initialOutstanding }];
   const payoffMonthById = new Map<string, number>();
   let months = 0;
   let totalInterest = 0;
@@ -172,6 +211,7 @@ function simulateDebts(
 
     rollover += freedScheduled;
     const remaining = working.reduce((sum, row) => sum + row.balance, 0);
+    balanceSeries.push({ month, remaining: Math.max(0, remaining) });
     if (remaining <= EPS) break;
     if (principalMoved <= EPS && Math.max(0, globalExtra) + Math.max(0, rollover) <= EPS) {
       stalled = true;
@@ -220,11 +260,13 @@ function simulateDebts(
     stalled,
     debtFreeDateLabel,
     payoffTimeline,
+    balanceSeries,
   };
 }
 
 export default function DebtRepaymentScreen() {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
   const colors = useAppColors();
   const { t } = useI18n();
   const { settings } = useSettings();
@@ -246,6 +288,10 @@ export default function DebtRepaymentScreen() {
   const [extraPayment, setExtraPayment] = useState("0");
   const [priority, setPriority] = useState("1");
   const [editingDebtId, setEditingDebtId] = useState<string | null>(null);
+  const [chartView, setChartView] = useState<"cumulativeDebt" | "debtFreeCount">("cumulativeDebt");
+  const [timelineView, setTimelineView] = useState<"timeline" | "debtFree">("timeline");
+  const [showDebtChart, setShowDebtChart] = useState(true);
+  const [chartSelectedIndex, setChartSelectedIndex] = useState<number | null>(null);
 
   const [editName, setEditName] = useState("");
   const [editCategory, setEditCategory] = useState<string>(DEBT_CATEGORIES[0]);
@@ -263,11 +309,99 @@ export default function DebtRepaymentScreen() {
     return weighted / totalDebtBalance;
   }, [debts, totalDebtBalance]);
 
-  const parsedGlobalExtra = Number(globalExtraPayment);
+  const parsedGlobalExtra = parseLocaleNumber(globalExtraPayment);
   const extraPool = Number.isFinite(parsedGlobalExtra) ? Math.max(0, parsedGlobalExtra) : 0;
   const simulation = useMemo(
     () => simulateDebts(debts, repaymentMethod, extraPool, settings.language),
     [debts, repaymentMethod, extraPool, settings.language]
+  );
+  const payoffById = useMemo(() => new Map(simulation.payoffTimeline.map((row) => [row.id, row])), [simulation.payoffTimeline]);
+  const debtSeriesValues = useMemo(() => simulation.balanceSeries.map((point) => point.remaining), [simulation.balanceSeries]);
+  const debtFreeCountSeries = useMemo(() => {
+    const paidMonths = simulation.payoffTimeline
+      .map((row) => row.month)
+      .filter((month): month is number => typeof month === "number" && month >= 0)
+      .sort((a, b) => a - b);
+    return simulation.balanceSeries.map((point) => {
+      let count = 0;
+      while (count < paidMonths.length && paidMonths[count] <= point.month) count += 1;
+      return count;
+    });
+  }, [simulation.payoffTimeline, simulation.balanceSeries]);
+  const chartValues = chartView === "cumulativeDebt" ? debtSeriesValues : debtFreeCountSeries;
+  const chartColor = chartView === "cumulativeDebt" ? "#8D6AF0" : "#5CE0AB";
+  const maxTimelineMonth = useMemo(() => {
+    const settledMonths = simulation.payoffTimeline
+      .map((row) => row.month ?? 0)
+      .filter((month) => month > 0);
+    const peak = settledMonths.length ? Math.max(...settledMonths) : 0;
+    return Math.max(1, peak, simulation.months);
+  }, [simulation.payoffTimeline, simulation.months]);
+  const debtChartWidth = useMemo(
+    () => Math.max(220, Math.floor(windowWidth - SCREEN_HORIZONTAL_PADDING * 2 - 40)),
+    [windowWidth]
+  );
+  const chartYAxisWidth = 54;
+  const chartHeight = 170;
+  const chartPlotWidth = useMemo(() => Math.max(160, debtChartWidth - chartYAxisWidth - 6), [debtChartWidth]);
+  const chartSeries = useMemo(
+    () => simulation.balanceSeries.map((point, index) => ({ month: point.month, value: chartValues[index] ?? 0 })),
+    [simulation.balanceSeries, chartValues]
+  );
+  const chartStats = useMemo(() => {
+    if (!chartValues.length) return null;
+    const min = Math.min(...chartValues);
+    const max = Math.max(...chartValues);
+    const range = Math.max(max - min, 1e-9);
+    return { min, max, range };
+  }, [chartValues]);
+  const chartYTicks = useMemo(() => {
+    if (!chartStats) return [];
+    return Array.from({ length: 5 }, (_, i) => {
+      const ratio = i / 4;
+      const value = chartStats.max - ratio * chartStats.range;
+      return { value, topPct: ratio * 100 };
+    });
+  }, [chartStats]);
+  const chartSelectedIndexClamped =
+    chartSelectedIndex === null || !chartSeries.length
+      ? null
+      : Math.max(0, Math.min(chartSeries.length - 1, chartSelectedIndex));
+  const chartSelectedPoint = chartSelectedIndexClamped === null ? null : chartSeries[chartSelectedIndexClamped];
+  const chartSelectedX =
+    chartSelectedIndexClamped === null || chartSeries.length < 2
+      ? null
+      : Math.round((chartSelectedIndexClamped / (chartSeries.length - 1)) * Math.max(chartPlotWidth - 1, 1));
+  const chartSelectedY =
+    chartSelectedPoint && chartStats
+      ? chartHeight - ((chartSelectedPoint.value - chartStats.min) / chartStats.range) * chartHeight
+      : null;
+  const selectNearestDebtChartIndex = useCallback((x: number) => {
+    if (!chartSeries.length) return;
+    const clamped = Math.max(0, Math.min(chartPlotWidth, x));
+    const idx = Math.round((clamped / Math.max(chartPlotWidth, 1)) * Math.max(chartSeries.length - 1, 0));
+    setChartSelectedIndex(Math.max(0, Math.min(chartSeries.length - 1, idx)));
+  }, [chartSeries, chartPlotWidth]);
+  const chartStartMonthLabel = chartSeries.length ? `${t("Month", "Monat")} ${chartSeries[0].month}` : `${t("Month", "Monat")} 0`;
+  const chartMidMonthLabel =
+    chartSeries.length > 2 ? `${t("Month", "Monat")} ${chartSeries[Math.floor((chartSeries.length - 1) / 2)].month}` : "";
+  const chartEndMonthLabel =
+    chartSeries.length ? `${t("Month", "Monat")} ${chartSeries[chartSeries.length - 1].month}` : "-";
+  const chartCardTitle =
+    chartView === "cumulativeDebt"
+      ? t("Outstanding Debt Trend", "Trend der Restschuld")
+      : t("Debt-Free Progress", "Fortschritt schuldenfrei");
+  const formatChartValue = useCallback((value: number) => {
+    if (chartView === "cumulativeDebt") return toMoney(value, settings.currency, settings.language);
+    return `${Math.round(value)} / ${debts.length}`;
+  }, [chartView, settings.currency, settings.language, debts.length]);
+  const settledRows = useMemo(
+    () => simulation.payoffTimeline.filter((row) => row.month !== null),
+    [simulation.payoffTimeline]
+  );
+  const openRows = useMemo(
+    () => simulation.payoffTimeline.filter((row) => row.month === null),
+    [simulation.payoffTimeline]
   );
 
   const methodSubtitle =
@@ -278,6 +412,50 @@ export default function DebtRepaymentScreen() {
       : repaymentMethod === "custom"
       ? t("Manual priority rank. Lower rank gets paid first.", "Manuelle Prioritaet. Niedriger Rang wird zuerst bedient.")
       : t("Only minimums + extras. No priority rotation.", "Nur Mindestzahlungen + Extra. Keine Prioritaetsrotation.");
+
+  const repaymentStrategyCard = (
+    <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 8 }}>
+      <Text style={{ color: colors.text, fontWeight: "800", fontSize: 16 }}>{t("Repayment Strategy", "Rueckzahlungsstrategie")}</Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        {([
+          { id: "snowball", label: t("Snowball", "Snowball") },
+          { id: "avalanche", label: t("Avalanche", "Avalanche") },
+          { id: "custom", label: t("Custom Priority", "Eigene Prioritaet") },
+          { id: "minimum", label: t("Minimum Only", "Nur Minimum") },
+        ] as { id: DebtMethod; label: string }[]).map((option) => {
+          const active = repaymentMethod === option.id;
+          return (
+            <Pressable
+              key={option.id}
+              onPress={() => setRepaymentMethod(option.id)}
+              style={({ pressed }) => ({
+                borderRadius: 999,
+                borderWidth: 1,
+                borderColor: active ? colors.accentBorder : colors.border,
+                backgroundColor: pressed ? (colors.dark ? "#1A1F33" : "#EEF2FF") : active ? colors.accentSoft : colors.surfaceAlt,
+                paddingHorizontal: 11,
+                paddingVertical: 7,
+              })}
+            >
+              <Text style={{ color: active ? colors.accent : colors.subtext, fontWeight: "800", fontSize: 12 }}>{option.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <Text style={{ color: colors.subtext, fontSize: 12 }}>{methodSubtitle}</Text>
+      <FormInput
+        value={globalExtraPayment}
+        onChangeText={setGlobalExtraPayment}
+        keyboardType="decimal-pad"
+        label={t("Global Extra Payment / Month", "Globale Zusatzrate / Monat")}
+        placeholder={t("e.g. 250", "z.B. 250")}
+        help={t(
+          "Applied on top of all minimums using the selected method. Decimals support both '.' and ','.",
+          "Wird zusaetzlich zu allen Mindestraten nach gewaehlter Methode verteilt. Dezimalzahlen akzeptieren '.' und ','."
+        )}
+      />
+    </View>
+  );
 
   const beginEdit = (debt: DebtEntry) => {
     setEditingDebtId(debt.id);
@@ -292,14 +470,15 @@ export default function DebtRepaymentScreen() {
 
   const saveEdit = () => {
     if (!editingDebtId) return;
+    const parsedPriority = parseLocaleNumber(editPriority);
     updateDebt(editingDebtId, {
       name: editName.trim() || t("Debt", "Schuld"),
       category: editCategory.trim() || t("Other", "Sonstiges"),
-      balance: Number(editBalance),
-      aprPct: Number(editAprPct),
-      minimumPayment: Number(editMinimumPayment),
-      extraPayment: Number(editExtraPayment),
-      priority: Number(editPriority),
+      balance: parseLocaleNumber(editBalance),
+      aprPct: parseLocaleNumber(editAprPct),
+      minimumPayment: parseLocaleNumber(editMinimumPayment),
+      extraPayment: parseLocaleNumber(editExtraPayment),
+      priority: Number.isFinite(parsedPriority) ? parsedPriority : 1,
     });
     setEditingDebtId(null);
   };
@@ -347,45 +526,6 @@ export default function DebtRepaymentScreen() {
           </View>
         </View>
 
-        <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 8 }}>
-          <Text style={{ color: colors.text, fontWeight: "800", fontSize: 16 }}>{t("Repayment Strategy", "Rueckzahlungsstrategie")}</Text>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            {([
-              { id: "snowball", label: t("Snowball", "Snowball") },
-              { id: "avalanche", label: t("Avalanche", "Avalanche") },
-              { id: "custom", label: t("Custom Priority", "Eigene Prioritaet") },
-              { id: "minimum", label: t("Minimum Only", "Nur Minimum") },
-            ] as { id: DebtMethod; label: string }[]).map((option) => {
-              const active = repaymentMethod === option.id;
-              return (
-                <Pressable
-                  key={option.id}
-                  onPress={() => setRepaymentMethod(option.id)}
-                  style={({ pressed }) => ({
-                    borderRadius: 999,
-                    borderWidth: 1,
-                    borderColor: active ? colors.accentBorder : colors.border,
-                    backgroundColor: pressed ? (colors.dark ? "#1A1F33" : "#EEF2FF") : active ? colors.accentSoft : colors.surfaceAlt,
-                    paddingHorizontal: 11,
-                    paddingVertical: 7,
-                  })}
-                >
-                  <Text style={{ color: active ? colors.accent : colors.subtext, fontWeight: "800", fontSize: 12 }}>{option.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          <Text style={{ color: colors.subtext, fontSize: 12 }}>{methodSubtitle}</Text>
-          <FormInput
-            value={globalExtraPayment}
-            onChangeText={setGlobalExtraPayment}
-            keyboardType="decimal-pad"
-            label={t("Global Extra Payment / Month", "Globale Zusatzrate / Monat")}
-            placeholder={t("e.g. 250", "z.B. 250")}
-            help={t("Applied on top of all minimums using the selected method.", "Wird zusaetzlich zu allen Mindestraten nach gewaehlter Methode verteilt.")}
-          />
-        </View>
-
         <View style={{ marginTop: 10, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 6 }}>
           <Text style={{ color: colors.text, fontWeight: "800", fontSize: 16 }}>{t("Projected Outcome", "Prognose")}</Text>
           <Text style={{ color: colors.subtext, fontSize: 12 }}>
@@ -416,6 +556,327 @@ export default function DebtRepaymentScreen() {
         </View>
 
         <View style={{ marginTop: 10, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 8 }}>
+          <Text style={{ color: colors.text, fontWeight: "800", fontSize: 16 }}>{t("Debt Visual + Table", "Schulden-Visual + Tabelle")}</Text>
+          <Text style={{ color: colors.subtext, fontSize: 12 }}>
+            {t("Balance bars and payoff speed snapshot by debt.", "Saldo-Balken und Rueckzahlungs-Tempo je Schuld.")}
+          </Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {([
+              { id: "cumulativeDebt", label: t("Cumulative Debt", "Kumulative Schulden") },
+              { id: "debtFreeCount", label: t("Debt-Free Count", "Anzahl schuldenfrei") },
+            ] as const).map((option) => {
+              const active = chartView === option.id;
+              return (
+                <Pressable
+                  key={option.id}
+                  onPress={() => setChartView(option.id)}
+                  style={({ pressed }) => ({
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: active ? colors.accentBorder : colors.border,
+                    backgroundColor: pressed ? (colors.dark ? "#1A1F33" : "#EEF2FF") : active ? colors.accentSoft : colors.surfaceAlt,
+                    paddingHorizontal: 10,
+                    paddingVertical: 7,
+                  })}
+                >
+                  <Text style={{ color: active ? colors.accent : colors.subtext, fontWeight: "700", fontSize: 12 }}>{option.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={{ borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceAlt, padding: 10, gap: 7 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+              <Text style={{ color: colors.text, fontSize: 13, fontWeight: "800" }}>{chartCardTitle}</Text>
+              <Pressable
+                onPress={() => setShowDebtChart((v) => !v)}
+                style={({ pressed }) => ({
+                  borderRadius: 999,
+                  borderWidth: 1,
+                  borderColor: colors.accentBorder,
+                  backgroundColor: pressed ? (colors.dark ? "#1A1F33" : "#EEF2FF") : colors.accentSoft,
+                  paddingHorizontal: 10,
+                  paddingVertical: 6,
+                })}
+              >
+                <Text style={{ color: colors.accent, fontWeight: "700", fontSize: 11 }}>
+                  {showDebtChart ? t("Close graph", "Graph schliessen") : t("Show graph", "Graph anzeigen")}
+                </Text>
+              </Pressable>
+            </View>
+
+            {!showDebtChart ? (
+              <Text style={{ color: colors.subtext, fontSize: 12 }}>
+                {t("Chart hidden. Use the button to show it again.", "Graph ausgeblendet. Mit dem Button wieder einblenden.")}
+              </Text>
+            ) : chartValues.length >= 2 && chartStats ? (
+              <View style={{ width: debtChartWidth }}>
+                <View style={{ flexDirection: "row", alignItems: "stretch", gap: 6 }}>
+                  <View style={{ width: chartYAxisWidth, height: chartHeight, justifyContent: "space-between", paddingVertical: 2 }}>
+                    {chartYTicks.map((tick, idx) => (
+                      <Text key={`debt_y_${idx}`} style={{ color: colors.subtext, fontSize: 11, textAlign: "right" }}>
+                        {formatChartValue(tick.value)}
+                      </Text>
+                    ))}
+                  </View>
+
+                  <View
+                    style={{
+                      width: chartPlotWidth,
+                      height: chartHeight,
+                      borderRadius: 10,
+                      borderWidth: 1,
+                      borderColor: colors.dark ? "#252A3D" : "#D7E3F5",
+                      backgroundColor: colors.dark ? "#0E1320" : "#F7FAFF",
+                      overflow: "hidden",
+                    }}
+                    onStartShouldSetResponder={() => true}
+                    onMoveShouldSetResponder={() => true}
+                    onResponderGrant={(e) => selectNearestDebtChartIndex(e.nativeEvent.locationX)}
+                    onResponderMove={(e) => selectNearestDebtChartIndex(e.nativeEvent.locationX)}
+                  >
+                    <View pointerEvents="none" style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}>
+                      {chartYTicks.map((tick, idx) => (
+                        <View
+                          key={`debt_hgrid_${idx}`}
+                          style={{
+                            position: "absolute",
+                            left: 0,
+                            right: 0,
+                            top: `${tick.topPct}%`,
+                            borderTopWidth: 1,
+                            borderTopColor: colors.dark ? "rgba(130,140,170,0.22)" : "rgba(108,126,162,0.28)",
+                          }}
+                        />
+                      ))}
+                      {Array.from({ length: 5 }, (_, idx) => (
+                        <View
+                          key={`debt_vgrid_${idx}`}
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            bottom: 0,
+                            left: `${(idx / 4) * 100}%`,
+                            borderLeftWidth: 1,
+                            borderLeftColor: colors.dark ? "rgba(130,140,170,0.18)" : "rgba(108,126,162,0.22)",
+                          }}
+                        />
+                      ))}
+                    </View>
+
+                    <SimpleSeriesChart values={chartValues} width={chartPlotWidth} height={chartHeight} color={chartColor} />
+
+                    {chartSelectedX !== null && (
+                      <View
+                        pointerEvents="none"
+                        style={{
+                          position: "absolute",
+                          left: Math.max(0, Math.min(chartPlotWidth - 1, chartSelectedX)),
+                          top: 0,
+                          bottom: 0,
+                          borderLeftWidth: 1,
+                          borderLeftColor: colors.dark ? "rgba(196,176,255,0.75)" : "rgba(95,67,178,0.7)",
+                        }}
+                      />
+                    )}
+                    {chartSelectedY !== null && (
+                      <View
+                        pointerEvents="none"
+                        style={{
+                          position: "absolute",
+                          left: 0,
+                          right: 0,
+                          top: Math.max(0, Math.min(chartHeight - 1, chartSelectedY)),
+                          borderTopWidth: 1,
+                          borderTopColor: colors.dark ? "rgba(196,176,255,0.55)" : "rgba(95,67,178,0.5)",
+                        }}
+                      />
+                    )}
+
+                    {!!chartSelectedPoint && chartSelectedX !== null && (
+                      <View
+                        pointerEvents="none"
+                        style={{
+                          position: "absolute",
+                          top: 8,
+                          left: Math.max(6, Math.min(chartPlotWidth - 164, chartSelectedX - 78)),
+                          width: 158,
+                          borderRadius: 10,
+                          borderWidth: 1,
+                          borderColor: colors.dark ? "#343C59" : "#C7D6ED",
+                          backgroundColor: colors.dark ? "#121726" : "#FFFFFF",
+                          paddingHorizontal: 8,
+                          paddingVertical: 6,
+                        }}
+                      >
+                        <Text style={{ color: colors.text, fontWeight: "800", fontSize: 12 }}>
+                          {formatChartValue(chartSelectedPoint.value)}
+                        </Text>
+                        <Text style={{ color: colors.subtext, fontSize: 11, marginTop: 2 }}>
+                          {t("Month", "Monat")} {chartSelectedPoint.month}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+
+                <View style={{ marginTop: 8, flexDirection: "row", justifyContent: "space-between", paddingLeft: chartYAxisWidth + 4 }}>
+                  <Text style={{ color: colors.subtext, fontSize: 11 }}>{chartStartMonthLabel}</Text>
+                  <Text style={{ color: colors.subtext, fontSize: 11 }}>{chartMidMonthLabel}</Text>
+                  <Text style={{ color: colors.subtext, fontSize: 11 }}>{chartEndMonthLabel}</Text>
+                </View>
+              </View>
+            ) : (
+              <Text style={{ color: colors.subtext, fontSize: 12 }}>-</Text>
+            )}
+          </View>
+          {!debts.length ? (
+            <Text style={{ color: colors.subtext }}>-</Text>
+          ) : (
+            debts
+              .slice()
+              .sort((a, b) => b.balance - a.balance)
+              .map((debt) => {
+                const payoff = payoffById.get(debt.id);
+                const balanceShare = totalDebtBalance > 0 ? debt.balance / totalDebtBalance : 0;
+                const timelineShare = payoff?.month ? payoff.month / maxTimelineMonth : 1;
+                return (
+                  <View key={`viz:${debt.id}`} style={{ borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceAlt, padding: 8, gap: 6 }}>
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+                      <Text numberOfLines={1} style={{ color: colors.text, flex: 1, fontWeight: "700" }}>{debt.name}</Text>
+                      <Text style={{ color: colors.subtext, fontSize: 12 }}>{toMoney(debt.balance, settings.currency, settings.language)}</Text>
+                    </View>
+                    <View style={{ height: 7, borderRadius: 999, backgroundColor: colors.border }}>
+                      <View
+                        style={{
+                          height: 7,
+                          borderRadius: 999,
+                          width: `${Math.max(4, Math.min(100, balanceShare * 100))}%`,
+                          backgroundColor: "#5CE0AB",
+                        }}
+                      />
+                    </View>
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+                      <Text style={{ color: colors.subtext, fontSize: 12 }}>
+                        APR {debt.aprPct.toFixed(2)}% • {t("Min", "Min")} {toMoney(debt.minimumPayment + debt.extraPayment, settings.currency, settings.language)}
+                      </Text>
+                      <Text style={{ color: payoff?.month === null ? "#FF98AA" : "#8ED3FF", fontSize: 12, fontWeight: "700" }}>
+                        {payoff?.month === null ? t("Not reached", "Nicht erreicht") : `${t("Month", "Monat")} ${payoff?.month ?? "-"}`}
+                      </Text>
+                    </View>
+                    <View style={{ height: 5, borderRadius: 999, backgroundColor: colors.border }}>
+                      <View
+                        style={{
+                          height: 5,
+                          borderRadius: 999,
+                          width: `${Math.max(4, Math.min(100, timelineShare * 100))}%`,
+                          backgroundColor: payoff?.month === null ? "#FF98AA" : "#8ED3FF",
+                        }}
+                      />
+                    </View>
+                  </View>
+                );
+              })
+          )}
+          {!!debts.length && (
+            <View style={{ marginTop: 4, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 6, gap: 5 }}>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <Text style={{ color: colors.subtext, fontSize: 11, fontWeight: "700", flex: 1.5 }}>{t("Name", "Name")}</Text>
+                <Text style={{ color: colors.subtext, fontSize: 11, fontWeight: "700", flex: 1, textAlign: "right" }}>APR</Text>
+                <Text style={{ color: colors.subtext, fontSize: 11, fontWeight: "700", flex: 1.2, textAlign: "right" }}>{t("Pay / Mo", "Rate / Mo")}</Text>
+                <Text style={{ color: colors.subtext, fontSize: 11, fontWeight: "700", flex: 1.5, textAlign: "right" }}>{t("Payoff", "Tilgung")}</Text>
+              </View>
+              {debts.map((debt) => {
+                const payoff = payoffById.get(debt.id);
+                return (
+                  <View key={`table:${debt.id}`} style={{ flexDirection: "row", gap: 8 }}>
+                    <Text numberOfLines={1} style={{ color: colors.text, fontSize: 12, flex: 1.5 }}>{debt.name}</Text>
+                    <Text style={{ color: colors.subtext, fontSize: 12, flex: 1, textAlign: "right" }}>{debt.aprPct.toFixed(2)}%</Text>
+                    <Text style={{ color: colors.subtext, fontSize: 12, flex: 1.2, textAlign: "right" }}>
+                      {toMoney(debt.minimumPayment + debt.extraPayment, settings.currency, settings.language)}
+                    </Text>
+                    <Text style={{ color: payoff?.month === null ? "#FF98AA" : "#5CE0AB", fontSize: 12, flex: 1.5, textAlign: "right" }}>
+                      {payoff?.month === null ? t("Not reached", "Nicht erreicht") : `${t("Month", "Monat")} ${payoff?.month ?? "-"}`}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </View>
+
+        <View style={{ marginTop: 10, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 8 }}>
+          <Text style={{ color: colors.text, fontWeight: "800", fontSize: 16 }}>{t("Payoff Timeline", "Tilgungszeitplan")}</Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {([
+              { id: "timeline", label: t("Timeline", "Zeitachse") },
+              { id: "debtFree", label: t("Debt Free", "Schuldenfrei") },
+            ] as const).map((option) => {
+              const active = timelineView === option.id;
+              return (
+                <Pressable
+                  key={option.id}
+                  onPress={() => setTimelineView(option.id)}
+                  style={({ pressed }) => ({
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: active ? colors.accentBorder : colors.border,
+                    backgroundColor: pressed ? (colors.dark ? "#1A1F33" : "#EEF2FF") : active ? colors.accentSoft : colors.surfaceAlt,
+                    paddingHorizontal: 10,
+                    paddingVertical: 7,
+                  })}
+                >
+                  <Text style={{ color: active ? colors.accent : colors.subtext, fontWeight: "700", fontSize: 12 }}>{option.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {timelineView === "timeline" ? (
+            <View style={{ gap: 6 }}>
+              {simulation.payoffTimeline.map((row) => (
+                <View key={row.id} style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+                  <Text style={{ color: colors.subtext, flex: 1 }}>{row.name}</Text>
+                  <Text style={{ color: row.month === null ? "#FF98AA" : "#5CE0AB", fontWeight: "700" }}>
+                    {row.month === null
+                      ? t("Not reached", "Nicht erreicht")
+                      : `${t("Month", "Monat")} ${row.month} • ${row.dateLabel}`}
+                  </Text>
+                </View>
+              ))}
+              {!simulation.payoffTimeline.length ? <Text style={{ color: colors.subtext }}>-</Text> : null}
+            </View>
+          ) : (
+            <View style={{ gap: 6 }}>
+              <Text style={{ color: colors.subtext, fontSize: 12 }}>
+                {t("Debts cleared", "Schulden getilgt")}: {settledRows.length} / {debts.length}
+              </Text>
+              <Text style={{ color: colors.subtext, fontSize: 12 }}>
+                {t("Still open", "Noch offen")}: {openRows.length}
+              </Text>
+              <Text style={{ color: colors.subtext, fontSize: 12 }}>
+                {t("Projected debt-free date", "Prognose schuldenfrei am")}: {simulation.debtFreeDateLabel}
+              </Text>
+              {settledRows.map((row) => (
+                <View key={`settled:${row.id}`} style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+                  <Text style={{ color: colors.subtext, flex: 1 }}>{row.name}</Text>
+                  <Text style={{ color: "#5CE0AB", fontWeight: "700" }}>
+                    {t("Month", "Monat")} {row.month ?? "-"} • {row.dateLabel}
+                  </Text>
+                </View>
+              ))}
+              {!settledRows.length ? (
+                <Text style={{ color: colors.subtext, fontSize: 12 }}>
+                  {t("No debt reaches zero with current setup.", "Mit der aktuellen Einstellung wird keine Schuld komplett getilgt.")}
+                </Text>
+              ) : null}
+            </View>
+          )}
+        </View>
+
+        <View style={{ marginTop: 10 }}>
+          {repaymentStrategyCard}
+        </View>
+
+        <View style={{ marginTop: 10, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 8 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
             <Text style={{ color: colors.text, fontWeight: "800", fontSize: 16 }}>{t("Debt Inputs", "Schuldeneingaben")}</Text>
             <ActionButton
@@ -426,6 +887,9 @@ export default function DebtRepaymentScreen() {
 
           {showAddForm ? (
             <>
+              <Text style={{ color: colors.subtext, fontSize: 12 }}>
+                {t("You can use '.' or ',' for decimals in all amount fields.", "Du kannst '.' oder ',' als Dezimaltrennzeichen in allen Betragsfeldern nutzen.")}
+              </Text>
               <FormInput value={name} onChangeText={setName} label={t("Debt Name", "Schuldenname")} placeholder={t("e.g. Visa Card", "z.B. Visa Karte")} />
               <Text style={{ color: colors.subtext, fontSize: 12 }}>{t("Category", "Kategorie")}</Text>
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
@@ -467,17 +931,18 @@ export default function DebtRepaymentScreen() {
               />
               <ActionButton
                 label={t("Save Debt", "Schuld speichern")}
-                onPress={() =>
+                onPress={() => {
+                  const parsedPriority = parseLocaleNumber(priority);
                   addDebt({
                     name,
                     category,
-                    balance: Number(balance),
-                    aprPct: Number(aprPct),
-                    minimumPayment: Number(minimumPayment),
-                    extraPayment: Number(extraPayment),
-                    priority: Number(priority),
-                  })
-                }
+                    balance: parseLocaleNumber(balance),
+                    aprPct: parseLocaleNumber(aprPct),
+                    minimumPayment: parseLocaleNumber(minimumPayment),
+                    extraPayment: parseLocaleNumber(extraPayment),
+                    priority: Number.isFinite(parsedPriority) ? parsedPriority : 1,
+                  });
+                }}
                 style={{ alignSelf: "flex-start" }}
               />
             </>
@@ -487,7 +952,7 @@ export default function DebtRepaymentScreen() {
             <Text style={{ color: colors.subtext }}>{t("No debts added yet.", "Noch keine Schulden hinzugefuegt.")}</Text>
           ) : (
             debts.map((debt) => {
-              const payoff = simulation.payoffTimeline.find((row) => row.id === debt.id);
+              const payoff = payoffById.get(debt.id);
               const editing = editingDebtId === debt.id;
               return (
                 <View
@@ -544,23 +1009,6 @@ export default function DebtRepaymentScreen() {
               );
             })
           )}
-        </View>
-
-        <View style={{ marginTop: 10, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12 }}>
-          <Text style={{ color: colors.text, fontWeight: "800", fontSize: 16 }}>{t("Payoff Timeline", "Tilgungszeitplan")}</Text>
-          <View style={{ marginTop: 8, gap: 6 }}>
-            {simulation.payoffTimeline.map((row) => (
-              <View key={row.id} style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
-                <Text style={{ color: colors.subtext, flex: 1 }}>{row.name}</Text>
-                <Text style={{ color: row.month === null ? "#FF98AA" : "#5CE0AB", fontWeight: "700" }}>
-                  {row.month === null
-                    ? t("Not reached", "Nicht erreicht")
-                    : `${t("Month", "Monat")} ${row.month} • ${row.dateLabel}`}
-                </Text>
-              </View>
-            ))}
-            {!simulation.payoffTimeline.length ? <Text style={{ color: colors.subtext }}>-</Text> : null}
-          </View>
         </View>
 
         <View style={{ height: insets.bottom + 18 }} />

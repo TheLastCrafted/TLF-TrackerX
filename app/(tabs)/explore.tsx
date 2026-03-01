@@ -11,8 +11,10 @@ import { fetchFredSeries } from "../../src/data/macro";
 import { useI18n } from "../../src/i18n/use-i18n";
 import { loadPersistedJson, savePersistedJson } from "../../src/lib/persistence";
 import { useSettings } from "../../src/state/settings";
+import { useSubscriptionAccess } from "../../src/state/subscription-access";
 import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { RefreshFeedback, refreshControlProps } from "../../src/ui/refresh-feedback";
+import { SubscriptionLockedScreen } from "../../src/ui/subscription-locked-screen";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -132,6 +134,7 @@ export default function ExploreScreen() {
   const { settings, update } = useSettings();
   const colors = useAppColors();
   const { t } = useI18n();
+  const { canAccessRoute } = useSubscriptionAccess();
 
   const initialRegion: Region = settings.focusRegion === "Global" ? "All" : settings.focusRegion;
   const [region, setRegion] = useState<Region>(initialRegion);
@@ -499,6 +502,8 @@ export default function ExploreScreen() {
 
     setMarketSummary(report);
   };
+
+  if (!canAccessRoute("explore")) return <SubscriptionLockedScreen route="explore" title="Macro" />;
 
   return (
     <ScrollView

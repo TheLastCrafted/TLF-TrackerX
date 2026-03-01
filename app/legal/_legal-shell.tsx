@@ -86,3 +86,8 @@ export function LegalShell(props: { title: string; subtitle: string; children: R
 export function LegalCard(props: { title: string; children: ReactNode }) {
   return <Card title={props.title}>{props.children}</Card>;
 }
+
+// Non-routable helper file kept under app/ for shared legal screen UI.
+export default function LegalShellHelperRoutePlaceholder() {
+  return null;
+}

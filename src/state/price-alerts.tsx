@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Alert, Platform } from "react-native";
 import { fetchCoinGeckoMarkets } from "../data/coingecko";
 import { fetchYahooQuotes } from "../data/quotes";
+import { loadPersistedJson, savePersistedJson } from "../lib/persistence";
 import {
   getNotificationPermissionState,
   NotificationPermissionState,
@@ -60,6 +61,19 @@ function nextId() {
   return `price_alert_${alertId}`;
 }
 
+function seedAlertIdCounter(rows: PriceAlert[]) {
+  let maxSeen = alertId;
+  for (const row of rows) {
+    const match = /price_alert_(\d+)$/.exec(String(row.id));
+    if (!match) continue;
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed) && parsed > maxSeen) maxSeen = parsed;
+  }
+  alertId = maxSeen;
+}
+
+const ALERTS_PERSIST_KEY = "price_alerts_v1";
+
 function formatMoney(value: number, currency: "USD" | "EUR", language: "en" | "de"): string {
   if (!Number.isFinite(value)) return "-";
   return new Intl.NumberFormat(language, {
@@ -79,12 +93,43 @@ export function PriceAlertProvider(props: { children: ReactNode }) {
   const { settings } = useSettings();
   const [alerts, setAlerts] = useState<PriceAlert[]>([]);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionState>("unknown");
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const saved = await loadPersistedJson<PriceAlert[]>(ALERTS_PERSIST_KEY, []);
+      if (!alive) return;
+      const normalized = Array.isArray(saved)
+        ? saved.filter(
+            (row) =>
+              !!row &&
+              typeof row.id === "string" &&
+              typeof row.assetId === "string" &&
+              typeof row.symbol === "string" &&
+              typeof row.name === "string"
+          )
+        : [];
+      seedAlertIdCounter(normalized);
+      setAlerts(normalized);
+      setHydrated(true);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    void savePersistedJson(ALERTS_PERSIST_KEY, alerts);
+  }, [alerts, hydrated]);
 
   useEffect(() => {
     void getNotificationPermissionState().then(setNotificationPermission);
   }, []);
 
   useEffect(() => {
+    if (!hydrated) return;
     if (!settings.priceAlerts) return;
     if (!alerts.some((row) => !row.triggered)) return;
 
@@ -222,7 +267,7 @@ export function PriceAlertProvider(props: { children: ReactNode }) {
       alive = false;
       clearInterval(timer);
     };
-  }, [alerts, settings.currency, settings.language, settings.priceAlerts, settings.refreshSeconds]);
+  }, [alerts, hydrated, settings.currency, settings.language, settings.priceAlerts, settings.refreshSeconds]);
 
   const value = useMemo<PriceAlertContextValue>(() => {
     return {

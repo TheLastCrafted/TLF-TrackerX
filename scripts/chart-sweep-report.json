@@ -1,0 +1,105 @@
+{
+  "at": "2026-02-28T10:44:34.221Z",
+  "baseUrl": "https://tlf-trackerx.vercel.app",
+  "totalCharts": 4,
+  "totalChecks": 32,
+  "failures": [
+    {
+      "id": "fear_greed_index",
+      "tf": 1,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "fear_greed_index",
+      "tf": 7,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "fear_greed_index",
+      "tf": 30,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "fear_greed_index",
+      "tf": 365,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "fear_greed_index",
+      "tf": 1825,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "fear_greed_index",
+      "tf": 3650,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "fear_greed_index",
+      "tf": 7300,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "fear_greed_index",
+      "tf": 18250,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "transaction_fees",
+      "tf": 1,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "transaction_fees",
+      "tf": 7,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "transaction_fees",
+      "tf": 30,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "transaction_fees",
+      "tf": 365,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "transaction_fees",
+      "tf": 1825,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "transaction_fees",
+      "tf": 3650,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "transaction_fees",
+      "tf": 7300,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    },
+    {
+      "id": "transaction_fees",
+      "tf": 18250,
+      "pass": 1,
+      "reason": "exception_proxy_403"
+    }
+  ],
+  "warnings": []
+}

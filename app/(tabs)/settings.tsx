@@ -6,9 +6,11 @@ import { useRef, useState } from "react";
 import { Alert, Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ROUTE_ACCESS_POLICY } from "../../src/config/subscription";
 import { AppSettings, useSettings } from "../../src/state/settings";
 import { useI18n } from "../../src/i18n/use-i18n";
 import { usePriceAlerts } from "../../src/state/price-alerts";
+import { useSubscriptionAccess } from "../../src/state/subscription-access";
 import { ActionButton } from "../../src/ui/action-button";
 import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
@@ -114,6 +116,7 @@ export default function SettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { settings, update } = useSettings();
+  const { effectiveTier, baseTier, isDeveloperOverride } = useSubscriptionAccess();
   const {
     alerts,
     removeAlert,
@@ -125,6 +128,7 @@ export default function SettingsScreen() {
   const colors = useAppColors();
   const haptic = useHapticPress();
   const [compactHeader, setCompactHeader] = useState(false);
+  const versionTapRef = useRef<number[]>([]);
   const scrollRef = useRef<ScrollView>(null);
   const appVersion = Constants.expoConfig?.version ?? "dev";
   const extras = (Constants.expoConfig?.extra ?? {}) as {
@@ -153,9 +157,43 @@ export default function SettingsScreen() {
     { key: "showIndicatorsOnProChart", label: t("Indicators on Pro Chart", "Indikatoren im Pro-Chart") },
     { key: "compactNumbers", label: t("Compact Number Format", "Kompaktes Zahlenformat") },
     { key: "haptics", label: t("Haptics", "Haptik") },
+    { key: "vibration", label: t("Vibration", "Vibration") },
+    { key: "soundEffects", label: t("Sound Effects", "Soundeffekte") },
     { key: "autoRefresh", label: t("Auto Refresh", "Auto-Aktualisierung") },
     { key: "priceAlerts", label: t("Price Alerts", "Preisalarme") },
+    { key: "newsAlerts", label: t("News Alerts", "News-Alarme") },
+    { key: "syncAcrossDevices", label: t("Sync Across Devices", "Sync zwischen Geraeten") },
+    { key: "privacyMode", label: t("Privacy Mode", "Privatsphaere-Modus") },
+    { key: "analytics", label: t("Analytics", "Analytik") },
+    { key: "crashReports", label: t("Crash Reports", "Crash-Reports") },
   ];
+
+  const premiumFeatureCount = ROUTE_ACCESS_POLICY.filter((row) => row.tier === "premium").length;
+
+  const onVersionCardTap = () => {
+    const now = Date.now();
+    const windowMs = 1400;
+    const taps = [...versionTapRef.current.filter((ts) => now - ts <= windowMs), now];
+    versionTapRef.current = taps;
+    if (taps.length < 5) return;
+    versionTapRef.current = [];
+    if (!settings.developerMode) {
+      update("developerMode", true);
+      update("developerTier", "free");
+      Alert.alert(
+        t("Developer mode enabled", "Developer-Modus aktiviert"),
+        t(
+          "Testing mode is now active. You can switch between Free and Premium previews below.",
+          "Testmodus ist jetzt aktiv. Du kannst unten zwischen Free- und Premium-Vorschau wechseln."
+        )
+      );
+      return;
+    }
+    Alert.alert(
+      t("Developer mode already active", "Developer-Modus bereits aktiv"),
+      t("Use the Developer section below to switch tiers or exit test mode.", "Nutze den Developer-Bereich unten, um Tiers zu wechseln oder den Testmodus zu verlassen.")
+    );
+  };
 
   return (
     <ScrollView
@@ -376,6 +414,59 @@ export default function SettingsScreen() {
         ))}
       </Section>
 
+      {settings.developerMode && (
+        <Section
+          title={t("Developer Mode", "Developer-Modus")}
+          subtitle={t("Testing-only tier override. Remove before final public release.", "Nur fuer Tests: Tier-Override. Vor finalem Public-Release entfernen.")}
+        >
+          <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.accentBorder, backgroundColor: colors.surface, padding: 12, gap: 8 }}>
+            <Text style={{ color: colors.subtext }}>
+              {t("Base tier", "Basis-Tier")}: <Text style={{ color: colors.text, fontWeight: "800" }}>{baseTier.toUpperCase()}</Text>
+            </Text>
+            <Text style={{ color: colors.subtext }}>
+              {t("Effective tier", "Aktives Tier")}: <Text style={{ color: colors.accent, fontWeight: "900" }}>{effectiveTier.toUpperCase()}</Text>
+            </Text>
+            <Text style={{ color: colors.subtext }}>
+              {premiumFeatureCount} {t("premium routes are currently gated for Free users.", "Premium-Routen sind aktuell fuer Free-Nutzer gesperrt.")}
+            </Text>
+
+            <ChoiceRow
+              label={t("Tier Override", "Tier-Override")}
+              value={settings.developerTier}
+              options={[
+                { label: t("Free Preview", "Free-Vorschau"), value: "free" },
+                { label: t("Premium Preview", "Premium-Vorschau"), value: "premium" },
+              ]}
+              onChange={(value) => update("developerTier", value)}
+              dark={colors.dark}
+              onPressFeedback={() => haptic("light")}
+            />
+
+            <ActionButton
+              label={t("Exit Developer Mode", "Developer-Modus verlassen")}
+              onPress={() => {
+                haptic("light");
+                update("developerMode", false);
+                update("developerTier", "free");
+                Alert.alert(
+                  t("Developer mode disabled", "Developer-Modus deaktiviert"),
+                  t("App returned to normal subscription behavior.", "App ist zum normalen Abo-Verhalten zurueckgekehrt.")
+                );
+              }}
+              style={{ alignSelf: "flex-start" }}
+            />
+            {isDeveloperOverride && (
+              <Text style={{ color: colors.accent, fontSize: 12, fontWeight: "700" }}>
+                {t(
+                  "Developer override is active. This is test-only and must be removed before release.",
+                  "Developer-Override ist aktiv. Das ist nur fuer Tests und muss vor Release entfernt werden."
+                )}
+              </Text>
+            )}
+          </View>
+        </Section>
+      )}
+
       <Section title={t("Price Alerts", "Preisalarme")} subtitle={t("Active and triggered portfolio/market alerts", "Aktive und ausgeloeste Portfolio-/Marktalarme")}>
         <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 8 }}>
           <Text style={{ color: colors.text, fontWeight: "700" }}>
@@ -506,10 +597,18 @@ export default function SettingsScreen() {
         title={t("App Version", "App-Version")}
         subtitle={t("Use this section to verify the currently running build.", "Nutze diesen Bereich, um den aktuell laufenden Build zu pruefen.")}
       >
-        <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12, gap: 6 }}>
-          <Text style={{ color: colors.text, fontWeight: "800" }}>
-            {alphaLabel}
-          </Text>
+        <Pressable
+          onPress={onVersionCardTap}
+          style={({ pressed }) => ({
+            borderRadius: 14,
+            borderWidth: 1,
+            borderColor: settings.developerMode ? colors.accentBorder : colors.border,
+            backgroundColor: pressed ? colors.surfaceAlt : colors.surface,
+            padding: 12,
+            gap: 6,
+          })}
+        >
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{alphaLabel}</Text>
           <Text style={{ color: colors.subtext }}>
             {t("Expo version", "Expo-Version")}: {appVersion}
           </Text>
@@ -519,7 +618,12 @@ export default function SettingsScreen() {
           <Text style={{ color: colors.subtext }}>
             {t("Release", "Release")}: {releaseTag}
           </Text>
-        </View>
+          <Text style={{ color: settings.developerMode ? colors.accent : colors.subtext, fontSize: 11, marginTop: 2 }}>
+            {settings.developerMode
+              ? t("Developer mode active (testing only).", "Developer-Modus aktiv (nur Tests).")
+              : t("Tap this card 5x quickly to enable developer test mode.", "Tippe diese Karte 5x schnell, um den Developer-Testmodus zu aktivieren.")}
+          </Text>
+        </Pressable>
       </Section>
     </ScrollView>
   );

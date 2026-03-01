@@ -7,9 +7,11 @@ import { searchUniversalAssets, UniversalAsset } from "../../src/data/asset-sear
 import { fetchCoinGeckoMarketChart } from "../../src/data/coingecko";
 import { getResearchMaterials, type ResearchTopic } from "../../src/data/research-materials";
 import { useResearchNotes } from "../../src/state/research-notes";
+import { useSubscriptionAccess } from "../../src/state/subscription-access";
 import { ActionButton } from "../../src/ui/action-button";
 import { HapticPressable as Pressable } from "../../src/ui/haptic-pressable";
 import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
+import { SubscriptionLockedScreen } from "../../src/ui/subscription-locked-screen";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -37,6 +39,7 @@ export default function ResearchScreen() {
   const router = useRouter();
   const colors = useAppColors();
   const insets = useSafeAreaInsets();
+  const { canAccessRoute } = useSubscriptionAccess();
   const { notes, addNote, removeNote } = useResearchNotes();
 
   const [query, setQuery] = useState("BTC");
@@ -222,6 +225,8 @@ export default function ResearchScreen() {
 
     setSummary(text);
   };
+
+  if (!canAccessRoute("research")) return <SubscriptionLockedScreen route="research" title="Research" />;
 
   return (
     <ScrollView ref={scrollRef} style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ paddingBottom: 118 }}>

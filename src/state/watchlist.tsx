@@ -57,6 +57,7 @@ export function WatchlistProvider(props: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return;
+    if (!settings.autoRefresh) return;
     let alive = true;
     let inFlight = false;
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -91,15 +92,16 @@ export function WatchlistProvider(props: { children: ReactNode }) {
     };
 
     void tick();
+    const everyMs = Math.max(Platform.OS === "web" ? 30 : 30, settings.refreshSeconds) * 1000;
     timer = setInterval(() => {
       void tick();
-    }, Platform.OS === "web" ? 180_000 : 45_000);
+    }, everyMs);
 
     return () => {
       alive = false;
       if (timer) clearInterval(timer);
     };
-  }, [coinIds, equitySymbols, hydrated, settings.currency]);
+  }, [coinIds, equitySymbols, hydrated, settings.autoRefresh, settings.currency, settings.refreshSeconds]);
 
   const value = useMemo<WatchlistContextValue>(() => {
     return {

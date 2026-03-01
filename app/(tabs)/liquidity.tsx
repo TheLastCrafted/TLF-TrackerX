@@ -14,7 +14,9 @@ import {
 } from "../../src/lib/market-intelligence";
 import { useI18n } from "../../src/i18n/use-i18n";
 import { useSettings } from "../../src/state/settings";
+import { useSubscriptionAccess } from "../../src/state/subscription-access";
 import { RefreshFeedback, refreshControlProps } from "../../src/ui/refresh-feedback";
+import { SubscriptionLockedScreen } from "../../src/ui/subscription-locked-screen";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -32,6 +34,7 @@ export default function LiquidityScreen() {
   const colors = useAppColors();
   const { settings } = useSettings();
   const { t } = useI18n();
+  const { canAccessRoute } = useSubscriptionAccess();
 
   const [loading, setLoading] = useState(false);
   const [kpis, setKpis] = useState<Record<string, number>>({});
@@ -175,6 +178,8 @@ export default function LiquidityScreen() {
     if (kpis.liquidityState === -1) return "Contracting";
     return "Neutral";
   }, [kpis.liquidityState]);
+
+  if (!canAccessRoute("liquidity")) return <SubscriptionLockedScreen route="liquidity" title="Liquidity" />;
 
   return (
     <ScrollView

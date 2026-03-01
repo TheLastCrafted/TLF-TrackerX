@@ -1,4 +1,5 @@
 import { FINANCIAL_ASSETS } from "../catalog/financial-assets";
+import { getLastKnownStockQuotes } from "./stocks-live";
 import { fetchWithWebProxy } from "./web-proxy";
 
 export type SearchAssetKind = "stock" | "etf" | "crypto";
@@ -194,7 +195,6 @@ export async function searchUniversalAssets(query: string, limit = 24): Promise<
       kind: asset.kind,
       source: "local",
       coinGeckoId: asset.coinGeckoId,
-      lastPrice: asset.defaultPrice,
     }));
 
   const fmpTask = HAS_USABLE_FMP_KEY ? searchFmp(q, limit) : Promise.resolve([] as UniversalAsset[]);
@@ -213,6 +213,29 @@ export async function searchUniversalAssets(query: string, limit = 24): Promise<
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(item);
+  }
+
+  const symbolsNeedingLastPrice = deduped
+    .filter((row) => row.kind !== "crypto" && !Number.isFinite(Number(row.lastPrice)))
+    .map((row) => row.symbol.toUpperCase())
+    .filter(Boolean);
+  if (symbolsNeedingLastPrice.length) {
+    try {
+      const known = await getLastKnownStockQuotes(symbolsNeedingLastPrice);
+      const bySymbol = new Map(known.map((row) => [row.symbol.toUpperCase(), row]));
+      for (const row of deduped) {
+        if (row.kind === "crypto" && !row.coinGeckoId) continue;
+        if (row.kind === "crypto") continue;
+        if (Number.isFinite(Number(row.lastPrice))) continue;
+        const hit = bySymbol.get(row.symbol.toUpperCase());
+        if (!hit || !Number.isFinite(hit.price)) continue;
+        row.lastPrice = hit.price;
+        if (!row.currency && hit.currency) row.currency = hit.currency;
+        if (!row.exchange && hit.exchange) row.exchange = hit.exchange;
+      }
+    } catch {
+      // Best effort enrichment only.
+    }
   }
 
   return deduped.slice(0, limit);

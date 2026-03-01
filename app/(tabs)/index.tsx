@@ -1,17 +1,19 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, LayoutAnimation, Platform, RefreshControl, ScrollView, Text, UIManager, View } from "react-native";
+import { Alert, Animated, LayoutAnimation, Platform, RefreshControl, ScrollView, Text, UIManager, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CHARTS } from "../../src/catalog/charts";
 import { TRACKED_COINS } from "../../src/catalog/coins";
+import { routeRequiresPremium } from "../../src/config/subscription";
 import { CoinMarket, fetchCoinGeckoMarkets, fetchCoinGeckoTopMarkets } from "../../src/data/coingecko";
 import { fetchFredSeries } from "../../src/data/macro";
 import { fetchTopStockBreadth, StockBreadthSnapshot } from "../../src/data/stocks";
 import { useI18n } from "../../src/i18n/use-i18n";
 import { loadPersistedJson, savePersistedJson } from "../../src/lib/persistence";
 import { useSettings } from "../../src/state/settings";
+import { useSubscriptionAccess } from "../../src/state/subscription-access";
 import { useWatchlist } from "../../src/state/watchlist";
 import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { RefreshFeedback, refreshControlProps } from "../../src/ui/refresh-feedback";
@@ -164,6 +166,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { settings } = useSettings();
+  const { canAccessRoute } = useSubscriptionAccess();
   const { chartIds, coinIds, equitySymbols } = useWatchlist();
   const colors = useAppColors();
   const { t } = useI18n();
@@ -488,6 +491,25 @@ export default function HomeScreen() {
     { label: t("Macro", "Makro"), icon: "public", route: "/explore", tint: "#6FD6C8" },
     { label: t("News", "News"), icon: "article", route: "/news", tint: "#8EC8FF" },
   ] as const;
+
+  const onShortcutPress = (route: string, label: string) => {
+    const routeKey = route.replace(/^\//, "");
+    if (routeRequiresPremium(routeKey) && !canAccessRoute(routeKey)) {
+      Alert.alert(
+        t("Premium Feature", "Premium-Feature"),
+        t(
+          `${label} is part of Premium. Open Account to review access and unlock later.`,
+          `${label} ist Teil von Premium. Oeffne Konto, um den Zugang zu sehen und spaeter freizuschalten.`
+        ),
+        [
+          { text: t("Cancel", "Abbrechen"), style: "cancel" },
+          { text: t("Open Account", "Konto oeffnen"), onPress: () => router.push("/account") },
+        ]
+      );
+      return;
+    }
+    router.push(route as never);
+  };
 
   const toggleWidget = (id: WidgetId) => {
     setSelectedWidgets((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -994,25 +1016,32 @@ export default function HomeScreen() {
         <View style={[cardStyle, { marginBottom: 10 }]}> 
           <Text style={{ color: colors.text, fontWeight: "800", marginBottom: 8 }}>{t("Quick Nav", "Schnellnavigation")}</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            {shortcuts.map((s) => (
-              <Pressable
-                key={s.label}
-                onPress={() => router.push(s.route)}
-                style={({ pressed }) => ({
-                  width: "18.2%",
-                  minWidth: 62,
-                  borderRadius: 14,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  backgroundColor: pressed ? (colors.dark ? "#1A2033" : "#EDF3FF") : colors.dark ? "#151926" : "#F8FBFF",
-                  padding: 11,
-                  alignItems: "center",
-                })}
-              >
-                <MaterialIcons name={s.icon} size={20} color={s.tint} />
-                <Text style={{ color: colors.subtext, marginTop: 4, fontSize: 11, fontWeight: "700" }}>{s.label}</Text>
-              </Pressable>
-            ))}
+            {shortcuts.map((s) => {
+              const routeKey = s.route.replace(/^\//, "");
+              const lockedByPlan = routeRequiresPremium(routeKey) && !canAccessRoute(routeKey);
+              return (
+                <Pressable
+                  key={s.label}
+                  onPress={() => onShortcutPress(s.route, s.label)}
+                  style={({ pressed }) => ({
+                    width: "18.2%",
+                    minWidth: 62,
+                    borderRadius: 14,
+                    borderWidth: 1,
+                    borderColor: lockedByPlan ? colors.accentBorder : colors.border,
+                    backgroundColor: pressed ? (colors.dark ? "#1A2033" : "#EDF3FF") : colors.dark ? "#151926" : "#F8FBFF",
+                    padding: 11,
+                    alignItems: "center",
+                  })}
+                >
+                  <MaterialIcons name={s.icon} size={20} color={lockedByPlan ? colors.accent : s.tint} />
+                  <View style={{ marginTop: 4, flexDirection: "row", alignItems: "center", gap: 4 }}>
+                    <Text style={{ color: lockedByPlan ? colors.accent : colors.subtext, fontSize: 11, fontWeight: "700" }}>{s.label}</Text>
+                    {lockedByPlan && <MaterialIcons name="lock" size={10} color={colors.accent} />}
+                  </View>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
 

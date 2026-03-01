@@ -1,4 +1,5 @@
 import { FINANCIAL_ASSETS } from "../catalog/financial-assets";
+import { loadPersistedJson, savePersistedJson } from "../lib/persistence";
 import { fetchWithWebProxy } from "./web-proxy";
 
 export type StockKind = "stock" | "etf";
@@ -167,6 +168,14 @@ const HAS_USABLE_FMP_KEY = typeof FMP_API_KEY === "string" && FMP_API_KEY.trim()
 const LOCAL_BY_SYMBOL = new Map(
   FINANCIAL_ASSETS.filter((row) => row.kind === "stock" || row.kind === "etf").map((row) => [row.symbol.toUpperCase(), row])
 );
+const REAL_ROWS_PERSIST_KEY = "stocks_real_rows_v1";
+const REAL_TOP_PERSIST_KEY = "stocks_real_top_v1";
+const MAX_REAL_ROWS = 900;
+let realRowsHydrated = false;
+let realRowsHydrating: Promise<void> | null = null;
+const realRowsBySymbol = new Map<string, StockMarketRow>();
+let realTopRows: StockMarketRow[] = [];
+let persistRealTimer: ReturnType<typeof setTimeout> | null = null;
 
 function runtimeIsWeb(): boolean {
   return typeof window !== "undefined" && typeof document !== "undefined";
@@ -188,6 +197,128 @@ function asLooseNumber(v: unknown): number {
   return NaN;
 }
 
+function normalizeRealRow(row: Partial<StockMarketRow> | null | undefined): StockMarketRow | null {
+  const symbol = String(row?.symbol ?? "").trim().toUpperCase();
+  if (!symbol) return null;
+  const price = asLooseNumber(row?.price);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const local = LOCAL_BY_SYMBOL.get(symbol);
+  const name = String(row?.name ?? local?.name ?? symbol).trim() || symbol;
+  const kind: StockKind = row?.kind === "etf" || local?.kind === "etf" ? "etf" : "stock";
+  const changePct = asLooseNumber(row?.changePct);
+  const marketCap = asLooseNumber(row?.marketCap);
+  const volume = asLooseNumber(row?.volume);
+  const averageVolume = asLooseNumber(row?.averageVolume);
+  const high24h = asLooseNumber(row?.high24h);
+  const low24h = asLooseNumber(row?.low24h);
+  const lastUpdatedAt = Number.isFinite(asLooseNumber(row?.lastUpdatedAt))
+    ? Number(row?.lastUpdatedAt)
+    : Date.now();
+  return {
+    symbol,
+    name,
+    kind,
+    price,
+    changePct: Number.isFinite(changePct) ? changePct : 0,
+    marketCap: Number.isFinite(marketCap) ? marketCap : 0,
+    volume: Number.isFinite(volume) ? volume : 0,
+    averageVolume: Number.isFinite(averageVolume) ? averageVolume : undefined,
+    high24h: Number.isFinite(high24h) ? high24h : undefined,
+    low24h: Number.isFinite(low24h) ? low24h : undefined,
+    currency: String(row?.currency ?? "").trim() || undefined,
+    exchange: String(row?.exchange ?? "").trim() || undefined,
+    lastUpdatedAt,
+    logoUrl: stockLogoUrl(symbol),
+  };
+}
+
+function schedulePersistRealRows(): void {
+  if (persistRealTimer) return;
+  persistRealTimer = setTimeout(() => {
+    persistRealTimer = null;
+    const rows = [...realRowsBySymbol.values()]
+      .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0))
+      .slice(0, MAX_REAL_ROWS);
+    void savePersistedJson(REAL_ROWS_PERSIST_KEY, rows);
+    void savePersistedJson(REAL_TOP_PERSIST_KEY, realTopRows.slice(0, 260));
+  }, 250);
+}
+
+function getKnownTopRowsSync(count: number): StockMarketRow[] {
+  const limit = Math.max(20, Math.min(260, Math.floor(count)));
+  if (realTopRows.length) return realTopRows.slice(0, limit);
+  return [...realRowsBySymbol.values()]
+    .sort((a, b) => {
+      const cap = (b.marketCap || 0) - (a.marketCap || 0);
+      if (Math.abs(cap) > 0) return cap;
+      return (b.volume || 0) - (a.volume || 0);
+    })
+    .slice(0, limit);
+}
+
+function getKnownRowsForSymbolsSync(symbols: string[]): StockMarketRow[] {
+  const out: StockMarketRow[] = [];
+  const wanted = Array.from(new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean)));
+  if (!wanted.length) return out;
+  for (const symbol of wanted) {
+    const hit = realRowsBySymbol.get(symbol);
+    if (hit) out.push(hit);
+  }
+  return out;
+}
+
+async function hydrateRealRowsIfNeeded(): Promise<void> {
+  if (realRowsHydrated) return;
+  if (realRowsHydrating) return realRowsHydrating;
+  realRowsHydrating = (async () => {
+    const [savedRows, savedTop] = await Promise.all([
+      loadPersistedJson<Partial<StockMarketRow>[]>(REAL_ROWS_PERSIST_KEY, []),
+      loadPersistedJson<Partial<StockMarketRow>[]>(REAL_TOP_PERSIST_KEY, []),
+    ]);
+    for (const row of savedRows) {
+      const normalized = normalizeRealRow(row);
+      if (!normalized) continue;
+      realRowsBySymbol.set(normalized.symbol, normalized);
+    }
+    realTopRows = savedTop
+      .map((row) => normalizeRealRow(row))
+      .filter((row): row is StockMarketRow => Boolean(row))
+      .slice(0, 260);
+    if (!realTopRows.length && realRowsBySymbol.size) {
+      realTopRows = getKnownTopRowsSync(220);
+    }
+    realRowsHydrated = true;
+    realRowsHydrating = null;
+  })();
+  return realRowsHydrating;
+}
+
+function rememberRealRows(rows: StockMarketRow[], opts?: { updateTop?: boolean; topCount?: number }): void {
+  let changed = false;
+  for (const row of rows) {
+    const normalized = normalizeRealRow(row);
+    if (!normalized) continue;
+    const prev = realRowsBySymbol.get(normalized.symbol);
+    if (
+      !prev ||
+      normalized.lastUpdatedAt >= prev.lastUpdatedAt ||
+      normalized.price !== prev.price ||
+      normalized.marketCap !== prev.marketCap
+    ) {
+      realRowsBySymbol.set(normalized.symbol, normalized);
+      changed = true;
+    }
+  }
+  if (opts?.updateTop) {
+    realTopRows = rows
+      .map((row) => normalizeRealRow(row))
+      .filter((row): row is StockMarketRow => Boolean(row))
+      .slice(0, Math.max(20, Math.min(260, Math.floor(opts.topCount ?? 220))));
+    changed = true;
+  }
+  if (changed) schedulePersistRealRows();
+}
+
 function firstFinite(...values: (number | undefined)[]): number {
   for (const value of values) {
     if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -202,44 +333,14 @@ function parseKind(input: string | undefined): StockKind | null {
   return null;
 }
 
-function localFallbackRow(symbol: string): StockMarketRow | null {
-  const meta = LOCAL_BY_SYMBOL.get(symbol.toUpperCase());
-  if (!meta) return null;
-  return {
-    symbol: meta.symbol.toUpperCase(),
-    name: meta.name,
-    kind: meta.kind === "etf" ? "etf" : "stock",
-    price: Number(meta.defaultPrice ?? 0),
-    changePct: 0,
-    marketCap: 0,
-    volume: 0,
-    currency: "USD",
-    exchange: undefined,
-    lastUpdatedAt: Date.now(),
-    logoUrl: stockLogoUrl(meta.symbol),
-  };
+export async function getLastKnownTopStocks(count = 200): Promise<StockMarketRow[]> {
+  await hydrateRealRowsIfNeeded();
+  return getKnownTopRowsSync(count);
 }
 
-function buildLocalFallbackRows(count: number): StockMarketRow[] {
-  return FINANCIAL_ASSETS.filter((row) => row.kind === "stock" || row.kind === "etf")
-    .slice(0, count)
-    .map((asset) => ({
-      symbol: asset.symbol.toUpperCase(),
-      name: asset.name,
-      kind: asset.kind === "etf" ? "etf" : "stock",
-      price: Number(asset.defaultPrice ?? 0),
-      changePct: 0,
-      marketCap: 0,
-      volume: 0,
-      currency: "USD",
-      exchange: undefined,
-      lastUpdatedAt: Date.now(),
-      logoUrl: stockLogoUrl(asset.symbol),
-    }));
-}
-
-export function getLocalStockFallbackRows(count = 200): StockMarketRow[] {
-  return buildLocalFallbackRows(Math.max(20, Math.min(220, Math.floor(count))));
+export async function getLastKnownStockQuotes(symbols: string[]): Promise<StockMarketRow[]> {
+  await hydrateRealRowsIfNeeded();
+  return getKnownRowsForSymbolsSync(symbols);
 }
 
 export function stockLogoUrl(symbol: string): string {
@@ -309,6 +410,7 @@ export async function fetchTopStocks(params?: {
   if (pending) return pending;
 
   const run = (async () => {
+    await hydrateRealRowsIfNeeded();
     const isWeb = runtimeIsWeb();
     const limit = Math.max(220, count);
     const yahooSeedUniverse = isWeb ? await fetchYahooTopUniverseFromSeed(limit) : [];
@@ -320,13 +422,6 @@ export async function fetchTopStocks(params?: {
     for (const row of merged) {
       if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
     }
-    if (isWeb && bySymbol.size < count) {
-      const fallback = buildLocalFallbackRows(count);
-      for (const row of fallback) {
-        if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
-        if (bySymbol.size >= count) break;
-      }
-    }
     const rows = [...bySymbol.values()]
       .sort((a, b) => {
         const capDiff = (b.marketCap || 0) - (a.marketCap || 0);
@@ -334,7 +429,8 @@ export async function fetchTopStocks(params?: {
         return (b.volume || 0) - (a.volume || 0);
       })
       .slice(0, count);
-    const safeRows = rows.length ? rows : buildLocalFallbackRows(count);
+    const safeRows = rows.length ? rows : getKnownTopRowsSync(count);
+    if (rows.length) rememberRealRows(rows, { updateTop: true, topCount: count });
     topStocksCache.set(key, { expiresAt: Date.now() + cacheTtlMs, rows: safeRows });
     return safeRows;
   })();
@@ -741,6 +837,7 @@ export async function fetchStockQuoteSnapshot(
   symbols: string[],
   params?: { useCache?: boolean; cacheTtlMs?: number; enrich?: boolean }
 ): Promise<StockMarketRow[]> {
+  await hydrateRealRowsIfNeeded();
   const uniq = Array.from(new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean)));
   if (!uniq.length) return [];
   const isWebRuntime = runtimeIsWeb();
@@ -854,19 +951,9 @@ export async function fetchStockQuoteSnapshot(
       }
     }
 
-    for (const symbol of uniq) {
-      if (bySymbol.has(symbol)) continue;
-      const local = localFallbackRow(symbol);
-      if (local) bySymbol.set(symbol, local);
-    }
-
     const finalRows = uniq.map((symbol) => bySymbol.get(symbol)).filter((row): row is StockMarketRow => Boolean(row));
-    const safeRows =
-      finalRows.length > 0
-        ? finalRows
-        : uniq
-            .map((symbol) => localFallbackRow(symbol))
-            .filter((row): row is StockMarketRow => Boolean(row));
+    if (finalRows.length) rememberRealRows(finalRows);
+    const safeRows = finalRows.length > 0 ? finalRows : getKnownRowsForSymbolsSync(uniq);
     if (safeRows.length) {
       quoteCache.set(key, { expiresAt: Date.now() + cacheTtlMs, rows: safeRows });
       return safeRows;
@@ -878,7 +965,7 @@ export async function fetchStockQuoteSnapshot(
   try {
     return await run;
   } catch {
-    return cached?.rows ?? [];
+    return cached?.rows ?? getKnownRowsForSymbolsSync(uniq);
   } finally {
     quoteInflight.delete(key);
   }

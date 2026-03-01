@@ -1,5 +1,6 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { loadPersistedJson, savePersistedJson } from "../lib/persistence";
 
 export type AppLanguage = "en" | "de";
 export type AppCurrency = "USD" | "EUR";
@@ -10,6 +11,7 @@ export type SimpleChartType = "line" | "bar";
 export type SimpleDensity = "low" | "medium" | "high";
 export type FocusRegion = "Global" | "US" | "EU";
 export type WorkspaceMode = "hybrid" | "institutional" | "personal";
+export type DeveloperTier = "free" | "premium";
 
 export type AppSettings = {
   language: AppLanguage;
@@ -53,6 +55,8 @@ export type AppSettings = {
   analytics: boolean;
   institutionalMode: boolean;
   workspaceMode: WorkspaceMode;
+  developerMode: boolean;
+  developerTier: DeveloperTier;
 };
 
 type SettingsContextValue = {
@@ -102,12 +106,45 @@ const defaultSettings: AppSettings = {
   analytics: true,
   institutionalMode: false,
   workspaceMode: "hybrid",
+  developerMode: false,
+  developerTier: "free",
 };
+
+const SETTINGS_PERSIST_KEY = "settings_v1";
+
+function mergeSettings(input: Partial<AppSettings> | null | undefined): AppSettings {
+  if (!input || typeof input !== "object") return defaultSettings;
+  const merged: AppSettings = { ...defaultSettings, ...input };
+  if (merged.workspaceMode === "institutional") merged.institutionalMode = true;
+  if (merged.workspaceMode !== "institutional" && merged.institutionalMode && merged.workspaceMode === "hybrid") {
+    merged.institutionalMode = false;
+  }
+  return merged;
+}
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
 
 export function SettingsProvider(props: { children: ReactNode }) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const saved = await loadPersistedJson<Partial<AppSettings> | null>(SETTINGS_PERSIST_KEY, null);
+      if (!alive) return;
+      setSettings(mergeSettings(saved));
+      setHydrated(true);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    void savePersistedJson(SETTINGS_PERSIST_KEY, settings);
+  }, [hydrated, settings]);
 
   const value = useMemo<SettingsContextValue>(() => {
     return {

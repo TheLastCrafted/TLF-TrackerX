@@ -9,8 +9,10 @@ import { FINANCIAL_ASSETS } from "../../src/catalog/financial-assets";
 import { searchUniversalAssets, UniversalAsset } from "../../src/data/asset-search";
 import { useI18n } from "../../src/i18n/use-i18n";
 import { useSettings } from "../../src/state/settings";
+import { useSubscriptionAccess } from "../../src/state/subscription-access";
 import { useWatchlist } from "../../src/state/watchlist";
 import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
+import { SubscriptionLockedScreen } from "../../src/ui/subscription-locked-screen";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
 import { useAppColors } from "../../src/ui/use-app-colors";
 
@@ -22,6 +24,7 @@ type AssetKindFilter = "all" | "stock" | "etf" | "crypto";
 export default function ChartsTab() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { canAccessRoute } = useSubscriptionAccess();
   const { settings, update } = useSettings();
   const { chartIds, isChartSaved, toggleChart } = useWatchlist();
   const colors = useAppColors();
@@ -107,6 +110,8 @@ export default function ChartsTab() {
       rows: filtered.filter((item) => item.category === section),
     })).filter((group) => group.rows.length > 0);
   }, [filtered, focusMode]);
+
+  if (!canAccessRoute("charts")) return <SubscriptionLockedScreen route="charts" title="Charts" />;
 
   return (
     <ScrollView

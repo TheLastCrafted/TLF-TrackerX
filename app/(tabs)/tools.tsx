@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "expo-router";
-import { Animated, LayoutAnimation, Platform, ScrollView, Text, UIManager, View } from "react-native";
+import { Alert, Animated, LayoutAnimation, Platform, ScrollView, Text, UIManager, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useIsFocused } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { routeRequiresPremium } from "../../src/config/subscription";
 import { useFinanceTools } from "../../src/state/finance-tools";
 import { fetchCoinGeckoMarkets } from "../../src/data/coingecko";
 import { fetchYahooQuotes } from "../../src/data/quotes";
@@ -13,6 +14,7 @@ import { searchUniversalAssets } from "../../src/data/asset-search";
 import { useI18n } from "../../src/i18n/use-i18n";
 import { loadPersistedJson, savePersistedJson } from "../../src/lib/persistence";
 import { useSettings } from "../../src/state/settings";
+import { useSubscriptionAccess } from "../../src/state/subscription-access";
 import { HapticPressable as Pressable } from "../../src/ui/haptic-pressable";
 import { useLogoScrollToTop } from "../../src/ui/logo-scroll-events";
 import { SCREEN_HORIZONTAL_PADDING, TabHeader } from "../../src/ui/tab-header";
@@ -67,6 +69,7 @@ export default function ToolsHomeScreen() {
   const colors = useAppColors();
   const { t } = useI18n();
   const { settings } = useSettings();
+  const { canAccessRoute } = useSubscriptionAccess();
   const isFocused = useIsFocused();
   const { holdings, budgets, expenses, incomes } = useFinanceTools();
   const [showWidgetPicker, setShowWidgetPicker] = useState(false);
@@ -364,6 +367,25 @@ export default function ToolsHomeScreen() {
     { label: "Debt", icon: "credit-card", route: "/debt", tint: "#FF97B2" },
   ] as const;
 
+  const onShortcutPress = (route: string, label: string) => {
+    const routeKey = route.replace(/^\//, "");
+    if (routeRequiresPremium(routeKey) && !canAccessRoute(routeKey)) {
+      Alert.alert(
+        t("Premium Feature", "Premium-Feature"),
+        t(
+          `${label} is part of Premium. Open Account to review access and unlock later.`,
+          `${label} ist Teil von Premium. Oeffne Konto, um den Zugang zu sehen und spaeter freizuschalten.`
+        ),
+        [
+          { text: t("Cancel", "Abbrechen"), style: "cancel" },
+          { text: t("Open Account", "Konto oeffnen"), onPress: () => router.push("/account") },
+        ]
+      );
+      return;
+    }
+    router.push(route as never);
+  };
+
   const toggleWidget = (id: PersonalWidgetId) => {
     setSelectedWidgets((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
@@ -586,25 +608,33 @@ export default function ToolsHomeScreen() {
 
         <View style={[cardStyle, { marginBottom: 10 }]}>
           <Text style={{ color: colors.text, fontWeight: "800", marginBottom: 8 }}>{t("Quick Nav", "Schnellnavigation")}</Text>
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            {shortcuts.map((s) => (
-              <Pressable
-                key={s.label}
-                onPress={() => router.push(s.route)}
-                style={({ pressed }) => ({
-                  flex: 1,
-                  borderRadius: 14,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  backgroundColor: pressed ? (colors.dark ? "#1A2033" : "#EDF3FF") : colors.dark ? "#151926" : "#F8FBFF",
-                  padding: 11,
-                  alignItems: "center",
-                })}
-              >
-                <MaterialIcons name={s.icon} size={20} color={s.tint} />
-                <Text style={{ color: colors.subtext, marginTop: 4, fontSize: 11, fontWeight: "700" }}>{s.label}</Text>
-              </Pressable>
-            ))}
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {shortcuts.map((s) => {
+              const routeKey = s.route.replace(/^\//, "");
+              const lockedByPlan = routeRequiresPremium(routeKey) && !canAccessRoute(routeKey);
+              return (
+                <Pressable
+                  key={s.label}
+                  onPress={() => onShortcutPress(s.route, s.label)}
+                  style={({ pressed }) => ({
+                    width: "18.2%",
+                    minWidth: 62,
+                    borderRadius: 14,
+                    borderWidth: 1,
+                    borderColor: lockedByPlan ? colors.accentBorder : colors.border,
+                    backgroundColor: pressed ? (colors.dark ? "#1A2033" : "#EDF3FF") : colors.dark ? "#151926" : "#F8FBFF",
+                    padding: 11,
+                    alignItems: "center",
+                  })}
+                >
+                  <MaterialIcons name={s.icon} size={20} color={lockedByPlan ? colors.accent : s.tint} />
+                  <View style={{ marginTop: 4, flexDirection: "row", alignItems: "center", gap: 4 }}>
+                    <Text style={{ color: lockedByPlan ? colors.accent : colors.subtext, fontSize: 11, fontWeight: "700" }}>{s.label}</Text>
+                    {lockedByPlan && <MaterialIcons name="lock" size={10} color={colors.accent} />}
+                  </View>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
 

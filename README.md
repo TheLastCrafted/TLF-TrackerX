@@ -1,50 +1,64 @@
-# Welcome to your Expo app 👋
+# TLF TrackerX
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Mobile-first finance tracker built with Expo + React Native.
 
-## Get started
+## Core Modules
 
-1. Install dependencies
+- Informational workspace: Home, Charts, Crypto, Stocks, Macro, Liquidity, Correlations, Scenario, Watchlist, News, Research
+- Personal workspace: Hub, Portfolio, Strategy, Budget, Cashflow, Debt
+- Command Center overlay + quick navigation
+- Local-first persistence for watchlist, finance tools, widget layouts, settings, alerts, and account framework state
 
-   ```bash
-   npm install
-   ```
+## Tech Stack
 
-2. Start the app
+- Expo SDK 54 / React Native 0.81 / React 19
+- Expo Router
+- Vercel serverless endpoints (`/api/http`, `/api/stooq`, `/api/yfinance`) for web proxy/fallback flows
 
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Setup
 
 ```bash
-npm run reset-project
+npm install
+npx expo start
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## Quality Checks
 
-## Learn more
+```bash
+npm run lint
+npx tsc --noEmit
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+CI (GitHub Actions) runs the same checks on push/PR.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Build Commands
 
-## Join the community
+```bash
+npm run build:alpha:ios
+npm run build:preview:ios
+npm run build:prod:ios
+```
 
-Join our community of developers creating universal apps.
+Equivalent Android commands are also available in `package.json`.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+## Release Readiness Notes
+
+Implemented now:
+
+- Settings persistence (`settings_v1`)
+- Price alerts persistence (`price_alerts_v1`)
+- Account/subscription framework state (`account_state_v1`)
+- Account screen wired to framework actions and statuses
+
+Prepared framework hooks (not fully integrated with external services yet):
+
+- Apple sign-in adapter contract (`src/services/auth-adapter.ts`)
+- Billing adapter contract (`src/services/billing-adapter.ts`)
+- Account provider APIs for sign-in, restore purchases, and entitlements
+
+Pending external integration:
+
+- Real Sign in with Apple credentials + token exchange
+- App Store billing / receipt validation backend flow
+- Production analytics/crash reporting pipeline
+

@@ -1,7 +1,7 @@
 import { useRouter } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
 import Svg, { Circle, Path } from "react-native-svg";
 
 import { CHARTS } from "../catalog/charts";
@@ -26,6 +26,7 @@ import { useCommandCenter } from "../state/command-center";
 import { useSettings } from "../state/settings";
 import { useI18n } from "../i18n/use-i18n";
 import { useAppColors } from "./use-app-colors";
+import { RefreshFeedback, refreshControlProps } from "./refresh-feedback";
 
 type SearchItem = {
   id: string;
@@ -97,7 +98,7 @@ async function buildSnapshot(currency: "usd" | "eur"): Promise<CommandCenterSnap
   try {
     const safeSeries = async (seriesId: string): Promise<{ x: number; y: number }[]> => {
       try {
-        return await fetchFredSeries({ seriesId, days: 720 });
+        return await fetchFredSeries({ seriesId, days: 720, useCache: false, cacheTtlMs: 90_000 });
       } catch {
         return [];
       }
@@ -229,6 +230,7 @@ export function CommandCenterOverlay() {
   const [query, setQuery] = useState("");
   const [snapshotUpdatedAt, setSnapshotUpdatedAt] = useState<number | null>(null);
   const [snapshot, setSnapshot] = useState<CommandCenterSnapshot | null>(null);
+  const [clockMs, setClockMs] = useState(Date.now());
 
   const loadSnapshot = useCallback(async (opts?: { force?: boolean; showLoader?: boolean }) => {
     const currency = settings.currency.toLowerCase() as "usd" | "eur";
@@ -279,10 +281,36 @@ export function CommandCenterOverlay() {
     }
   }, [settings.currency]);
 
+  const onManualRefresh = useCallback(async () => {
+    setManualRefreshing(true);
+    try {
+      await loadSnapshot({ force: true, showLoader: true });
+    } finally {
+      setManualRefreshing(false);
+    }
+  }, [loadSnapshot]);
+
   useEffect(() => {
     if (!open) return;
-    void loadSnapshot({ showLoader: true });
+    void loadSnapshot({ showLoader: true, force: true });
   }, [open, loadSnapshot]);
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = setInterval(() => {
+      setClockMs(Date.now());
+    }, 15_000);
+    return () => clearInterval(timer);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const cadenceMs = Math.max(20_000, (settings.refreshSeconds || 10) * 2000);
+    const timer = setInterval(() => {
+      void loadSnapshot({ force: true, showLoader: false });
+    }, cadenceMs);
+    return () => clearInterval(timer);
+  }, [open, loadSnapshot, settings.refreshSeconds]);
 
   useEffect(() => {
     // Warm snapshot in background so opening the command center is near-instant.
@@ -342,7 +370,7 @@ export function CommandCenterOverlay() {
 
   const displayStressScore = useMemo(() => {
     if (!snapshot) return 50;
-    return clampScore(100 - snapshot.stressScore);
+    return clampScore(snapshot.stressScore);
   }, [snapshot]);
   const aiBrief = useMemo(() => {
     if (!snapshot) return [];
@@ -395,6 +423,7 @@ export function CommandCenterOverlay() {
           overflow: "hidden",
         }}
       >
+          <RefreshFeedback refreshing={manualRefreshing} colors={colors} label={t("Refreshing command center...", "Command Center wird aktualisiert...")} />
           <View
             style={{
               paddingHorizontal: 14,
@@ -408,44 +437,17 @@ export function CommandCenterOverlay() {
           >
             <Text style={{ color: colors.text, fontWeight: "900", fontSize: 17 }}>TrackerX Command Center</Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <Pressable
-                disabled={manualRefreshing}
-                onPress={() => {
-                  void (async () => {
-                    setManualRefreshing(true);
-                    try {
-                      await loadSnapshot({ force: true, showLoader: true });
-                    } finally {
-                      setManualRefreshing(false);
-                    }
-                  })();
-                }}
-                style={({ pressed }) => ({
-                  borderRadius: 999,
-                  borderWidth: 1,
-                  borderColor: colors.accentBorder,
-                  backgroundColor: pressed ? colors.accentSoft : colors.surfaceAlt,
-                  paddingHorizontal: 10,
-                  paddingVertical: 5,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 6,
-                  opacity: manualRefreshing ? 0.85 : 1,
-                })}
-              >
-                {manualRefreshing ? (
-                  <ActivityIndicator size="small" color={colors.accent} />
-                ) : (
-                  <MaterialIcons name="refresh" size={12} color={colors.accent} />
-                )}
-                <Text style={{ color: colors.accent, fontSize: 10, fontWeight: "800" }}>
-                  {t("Refresh", "Aktualisieren")}
-                </Text>
-              </Pressable>
               {!!snapshotUpdatedAt && (
                 <View style={{ borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceAlt, paddingHorizontal: 8, paddingVertical: 3 }}>
                   <Text style={{ color: colors.subtext, fontSize: 10, fontWeight: "700" }}>
-                    {Date.now() - snapshotUpdatedAt < SNAPSHOT_TTL_MS ? t("Fresh", "Frisch") : t("Cached", "Cache")}
+                    {clockMs - snapshotUpdatedAt < SNAPSHOT_TTL_MS ? t("Fresh", "Frisch") : t("Cached", "Cache")}
+                  </Text>
+                </View>
+              )}
+              {!!snapshotUpdatedAt && (
+                <View style={{ borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceAlt, paddingHorizontal: 8, paddingVertical: 3 }}>
+                  <Text style={{ color: colors.subtext, fontSize: 10, fontWeight: "700" }}>
+                    {new Date(snapshotUpdatedAt).toLocaleTimeString(settings.language, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
                   </Text>
                 </View>
               )}
@@ -476,6 +478,15 @@ export function CommandCenterOverlay() {
             scrollEnabled
             showsVerticalScrollIndicator
             bounces
+            refreshControl={
+              <RefreshControl
+                refreshing={manualRefreshing}
+                onRefresh={() => {
+                  void onManualRefresh();
+                }}
+                {...refreshControlProps(colors, t("Refreshing command center...", "Command Center wird aktualisiert..."))}
+              />
+            }
             keyboardShouldPersistTaps="handled"
           >
             <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceAlt, padding: 10 }}>
@@ -630,16 +641,16 @@ export function CommandCenterOverlay() {
                       {t("How to read it", "So liest du ihn")}
                     </Text>
                     <Text style={{ color: "#FF8FA3", fontSize: 11, marginTop: 3 }}>
-                      {t("0-33: elevated stress", "0-33: erhoehter Stress")}
+                      {t("0-33: calmer risk backdrop", "0-33: ruhigeres Risikoumfeld")}
                     </Text>
                     <Text style={{ color: "#F5C77A", fontSize: 11, marginTop: 1 }}>
                       {t("34-66: mixed conditions", "34-66: gemischte Bedingungen")}
                     </Text>
                     <Text style={{ color: "#63E6BE", fontSize: 11, marginTop: 1 }}>
-                      {t("67-100: calm risk backdrop", "67-100: ruhiges Risikoumfeld")}
+                      {t("67-100: elevated stress", "67-100: erhoehter Stress")}
                     </Text>
                     <Text style={{ color: colors.subtext, fontSize: 10, marginTop: 4 }}>
-                      {t("Lower score means higher stress.", "Niedriger Wert bedeutet hoeheren Stress.")}
+                      {t("Higher score means higher stress.", "Hoeherer Wert bedeutet hoeheren Stress.")}
                     </Text>
                   </View>
                 </View>
