@@ -1,0 +1,409 @@
+# Chart Sweep Audit (Latest)
+
+Generated: 2026-03-02T12:07:30.771Z
+Total chart IDs in catalog: 391
+Chart IDs tested by sweep script: 280
+Total checks (id x timeframe x pass): 2240
+Working IDs (no failures): 167
+Failing IDs (>=1 failure): 113
+Not tested by this sweep: 111
+
+## Failing
+
+- ada_market_cap_usd | ADA Market Cap | failures=8 | points_0 x8
+- ada_price_usd | ADA Price | failures=8 | points_0 x8
+- ada_volume_usd | ADA Volume | failures=8 | points_0 x8
+- altcoin_market_caps | Altcoin Market Cap (Major-Cap Basket ex-BTC) | failures=8 | points_0 x8
+- altcoin_season_index | Altcoin Season Index | failures=8 | points_0 x8
+- atom_market_cap_usd | ATOM Market Cap | failures=8 | points_0 x8
+- atom_price_usd | ATOM Price | failures=8 | points_0 x8
+- atom_volume_usd | ATOM Volume | failures=8 | points_0 x8
+- avax_market_cap_usd | AVAX Market Cap | failures=8 | points_0 x8
+- avax_price_usd | AVAX Price | failures=8 | points_0 x8
+- bond_quality_gap | BAA Yield - AAA Yield | failures=8 | points_0 x8
+- claims_to_payrolls | Initial Claims / Payrolls | failures=8 | points_0 x8
+- consumption_to_income | Real PCE / Real Disposable Income | failures=8 | points_0 x8
+- correlation_coefficients | Correlation Coefficients | failures=8 | points_0 x8
+- credit_spread_stress_combo | HY Spread + TED Spread | failures=8 | points_0 x8
+- cro_price_usd | CRO Price | failures=8 | points_0 x8
+- days_since_pct_decline | Days Since Percentage Decline | failures=8 | points_0 x8
+- djia_minus_spx | Dow - S&P 500 | failures=8 | points_0 x8
+- does_it_bleed | Does It Bleed | failures=8 | points_0 x8
+- dot_market_cap_usd | DOT Market Cap | failures=8 | points_0 x8
+- dot_price_usd | DOT Price | failures=8 | points_0 x8
+- dot_volume_usd | DOT Volume | failures=8 | points_0 x8
+- energy_to_cpi | WTI / CPI | failures=8 | points_0 x8
+- equity_risk_proxy | S&P 500 / 10Y Yield | failures=8 | points_0 x8
+- eth_market_cap_usd | ETH Market Cap | failures=8 | points_0 x8
+- eth_price_usd | ETH Price | failures=8 | points_0 x8
+- eth_supply_dynamics_vs_bitcoin | Ethereum Supply Dynamics vs Bitcoin | failures=8 | points_0 x8
+- eth_volume_usd | ETH Volume | failures=8 | points_0 x8
+- ethereum_supply_burnt | Ethereum Supply Burnt | failures=8 | points_0 x8
+- eu_growth_to_policy | EU GDP / ECB Rate | failures=8 | points_0 x8
+- eu_hicp_minus_core | EU HICP - EU Core HICP | failures=8 | points_0 x8
+- eu_policy_real_proxy | EU Policy - EU Inflation (Proxy) | failures=8 | points_0 x8
+- eu_rate_spread_proxy | EU Long Yield - ECB Rate | failures=8 | points_0 x8
+- eu_rate_vs_us_rate | ECB Rate / Fed Funds | failures=8 | points_0 x8
+- eu_unemp_vs_sentiment | EU Unemployment - Sentiment | failures=8 | points_0 x8
+- eurusd_vs_policy | EURUSD / ECB Rate | failures=8 | points_0 x8
+- gas_statistics | Gas Statistics | failures=8 | points_0 x8
+- gold_to_real_yield | Gold / Real Yield | failures=8 | points_0 x8
+- hy_plus_vix | HY Spread + VIX | failures=8 | points_0 x8
+- ig_minus_hy | IG Spread - HY Spread | failures=8 | points_0 x8
+- imx_market_cap_usd | IMX Market Cap | failures=8 | points_0 x8
+- imx_price_usd | IMX Price | failures=8 | points_0 x8
+- imx_volume_usd | IMX Volume | failures=8 | points_0 x8
+- inj_market_cap_usd | INJ Market Cap | failures=8 | points_0 x8
+- inj_price_usd | INJ Price | failures=8 | points_0 x8
+- inj_volume_usd | INJ Volume | failures=8 | points_0 x8
+- jobs_balance | Job Openings - Unemployment | failures=8 | points_0 x8
+- kas_market_cap_usd | KAS Market Cap | failures=8 | points_0 x8
+- kas_price_usd | KAS Price | failures=8 | points_0 x8
+- ltc_market_cap_usd | LTC Market Cap | failures=8 | points_0 x8
+- ltc_price_usd | LTC Price | failures=8 | points_0 x8
+- ltc_volume_usd | LTC Volume | failures=8 | points_0 x8
+- matic_market_cap_usd | MATIC Market Cap | failures=8 | points_0 x8
+- matic_price_usd | MATIC Price | failures=8 | points_0 x8
+- matic_volume_usd | MATIC Volume | failures=8 | points_0 x8
+- mkr_market_cap_usd | MKR Market Cap | failures=8 | points_0 x8
+- mkr_price_usd | MKR Price | failures=8 | points_0 x8
+- mkr_volume_usd | MKR Volume | failures=8 | points_0 x8
+- money_vs_gdp | M2 / Nominal GDP | failures=8 | points_0 x8
+- mortgage_minus_policy | Mortgage Rate - Policy Rate | failures=8 | points_0 x8
+- nasdaq100_vs_nasdaq | NASDAQ-100 / NASDAQ Composite | failures=8 | points_0 x8
+- nasdaq_vs_spx | NASDAQ / S&P 500 Ratio | failures=8 | points_0 x8
+- near_price_usd | NEAR Price | failures=8 | points_0 x8
+- op_market_cap_usd | OP Market Cap | failures=8 | points_0 x8
+- op_price_usd | OP Price | failures=8 | points_0 x8
+- op_volume_usd | OP Volume | failures=8 | points_0 x8
+- rndr_market_cap_usd | RNDR Market Cap | failures=8 | points_0 x8
+- rndr_price_usd | RNDR Price | failures=8 | points_0 x8
+- rndr_volume_usd | RNDR Volume | failures=8 | points_0 x8
+- roi_after_bottom_multiple | ROI After Bottom (Multiple Coins) | failures=8 | points_0 x8
+- roi_after_bottom_pairs | ROI After Bottom (Crypto Pairs) | failures=8 | points_0 x8
+- roi_after_inception_multi | ROI After Inception (Multiple Coins) | failures=8 | points_0 x8
+- roi_after_inception_pairs | ROI After Inception (Crypto Pairs) | failures=8 | points_0 x8
+- roi_after_latest_cycle_peak_multi | ROI After Latest Cycle Peak (Multiple Coins) | failures=8 | points_0 x8
+- roi_after_latest_cycle_peak_pairs | ROI After Latest Cycle Peak (Crypto Pairs) | failures=8 | points_0 x8
+- roi_after_sub_cycle_bottom | ROI After Sub-Cycle Bottom | failures=8 | points_0 x8
+- savings_minus_unemployment | Savings Rate - Unemployment | failures=8 | points_0 x8
+- sei_market_cap_usd | SEI Market Cap | failures=8 | points_0 x8
+- sei_price_usd | SEI Price | failures=8 | points_0 x8
+- sei_volume_usd | SEI Volume | failures=8 | points_0 x8
+- shib_market_cap_usd | SHIB Market Cap | failures=8 | points_0 x8
+- shib_price_usd | SHIB Price | failures=8 | points_0 x8
+- spx_pe_vs_dy | PE / Dividend Yield | failures=8 | points_0 x8
+- spx_vs_vix | S&P 500 / VIX | failures=8 | points_0 x8
+- stress_combo | NFCI + STLFSI | failures=8 | points_0 x8
+- sui_market_cap_usd | SUI Market Cap | failures=8 | points_0 x8
+- sui_price_usd | SUI Price | failures=8 | points_0 x8
+- sui_volume_usd | SUI Volume | failures=8 | points_0 x8
+- ted_plus_vix | TED Spread + VIX | failures=8 | points_0 x8
+- ton_market_cap_usd | TON Market Cap | failures=8 | points_0 x8
+- ton_price_usd | TON Price | failures=8 | points_0 x8
+- ton_volume_usd | TON Volume | failures=8 | points_0 x8
+- trx_market_cap_usd | TRX Market Cap | failures=8 | points_0 x8
+- trx_price_usd | TRX Price | failures=8 | points_0 x8
+- trx_volume_usd | TRX Volume | failures=8 | points_0 x8
+- uni_market_cap_usd | UNI Market Cap | failures=8 | points_0 x8
+- uni_price_usd | UNI Price | failures=8 | points_0 x8
+- uni_volume_usd | UNI Volume | failures=8 | points_0 x8
+- us_real_rate_proxy | US Real Rate Proxy (10Y - 10Y Breakeven) | failures=8 | points_0 x8
+- vet_market_cap_usd | VET Market Cap | failures=8 | points_0 x8
+- vet_price_usd | VET Price | failures=8 | points_0 x8
+- vet_volume_usd | VET Volume | failures=8 | points_0 x8
+- wilshire_vs_spx | Wilshire 5000 / S&P 500 | failures=8 | points_0 x8
+- xlm_market_cap_usd | XLM Market Cap | failures=8 | points_0 x8
+- xlm_price_usd | XLM Price | failures=8 | points_0 x8
+- xlm_volume_usd | XLM Volume | failures=8 | points_0 x8
+- xmr_market_cap_usd | XMR Market Cap | failures=8 | points_0 x8
+- xmr_price_usd | XMR Price | failures=8 | points_0 x8
+- xmr_volume_usd | XMR Volume | failures=8 | points_0 x8
+- xrp_market_cap_usd | XRP Market Cap | failures=8 | points_0 x8
+- xrp_price_usd | XRP Price | failures=8 | points_0 x8
+- xrp_volume_usd | XRP Volume | failures=8 | points_0 x8
+- yield_curve_combo | 10Y-2Y + 10Y-3M | failures=8 | points_0 x8
+
+## Working
+
+- aave_market_cap_usd | AAVE Market Cap
+- aave_price_usd | AAVE Price
+- aave_volume_usd | AAVE Volume
+- absolute_breadth_index_abi | Absolute Breadth Index (ABI)
+- address_activity | Address Activity
+- advance_decline_index_adi | Advance Decline Index (ADI)
+- advance_decline_ratios | Advance Decline Ratios
+- algo_market_cap_usd | ALGO Market Cap
+- algo_price_usd | ALGO Price
+- algo_volume_usd | ALGO Volume
+- apt_market_cap_usd | APT Market Cap
+- apt_price_usd | APT Price
+- apt_volume_usd | APT Volume
+- arb_market_cap_usd | ARB Market Cap
+- arb_price_usd | ARB Price
+- arb_volume_usd | ARB Volume
+- avax_volume_usd | AVAX Volume
+- average_daily_returns | Average Daily Returns
+- bch_market_cap_usd | BCH Market Cap
+- bch_price_usd | BCH Price
+- bch_volume_usd | BCH Volume
+- benfords_law | Benford's Law
+- best_day_to_dca | Best Day To DCA
+- block_statistics | Block Statistics
+- bnb_market_cap_usd | BNB Market Cap
+- bnb_price_usd | BNB Price
+- bnb_volume_usd | BNB Volume
+- bollinger_bands | Bollinger Bands
+- btc_market_cap_usd | BTC Market Cap
+- btc_price_usd | BTC Price
+- btc_volume_usd | BTC Volume
+- btc_vs_dxy | BTC vs. DXY
+- bull_market_support_band | Bull Market Support Band (BMSB)
+- coin_days_destroyed | Coin Days Destroyed
+- coin_days_destroyed_90d | 90D Coin Days Destroyed
+- coins_above_below_moving_average | Coins Above/Below Moving Average
+- color_coded_moving_average_strength | Color-Coded Moving Average Strength
+- cowen_corridor | Cowen Corridor
+- cro_market_cap_usd | CRO Market Cap
+- cro_volume_usd | CRO Volume
+- crypto_heatmap | Crypto Heatmap
+- current_risk_levels | Current Risk Levels
+- cycles_deviation | Cycles Deviation
+- days_since_pct_gain | Days Since Percentage Gain
+- doge_market_cap_usd | DOGE Market Cap
+- doge_price_usd | DOGE Price
+- doge_volume_usd | DOGE Volume
+- dominance | BTC Dominance (Major-Cap Basket)
+- dormancy | Dormancy
+- eu_construction_output | EU Construction Output
+- eu_construction_vs_retail | EU Construction / Retail Sales
+- eu_cpi_core | EU Core HICP
+- eu_m3_money_supply | EU M3 Money Supply
+- eu_money_to_gdp | EU M3 / EU GDP
+- eu_producer_prices | EU Producer Price Index
+- eu_sentiment_indicator | EU Economic Sentiment
+- eu_sentiment_plus_climate | EU Sentiment + Business Climate
+- eu_trade_balance | EU Trade Balance
+- eu_trade_vs_industry | EU Trade Balance / Industrial Production
+- eu_unemployment_youth | EU Youth Unemployment
+- eu_youth_vs_total_unemp | EU Youth / Total Unemployment
+- fair_value_log_reg | Fair Value Logarithmic Regression
+- fear_greed_index | Fear & Greed Index
+- fil_market_cap_usd | FIL Market Cap
+- fil_price_usd | FIL Price
+- fil_volume_usd | FIL Volume
+- golden_death_crosses | Golden/Death Crosses
+- grt_market_cap_usd | GRT Market Cap
+- grt_price_usd | GRT Price
+- grt_volume_usd | GRT Volume
+- hash_rate | Hash Rate
+- hash_rate_divided_by_price | Hash Rate Divided By Price
+- hash_ribbons | Hash Ribbons
+- historical_monthly_average_roi | Historical Monthly Average ROI
+- historical_risk_levels | Historical Risk Levels
+- hodl_waves | HODL Waves
+- icp_market_cap_usd | ICP Market Cap
+- icp_price_usd | ICP Price
+- icp_volume_usd | ICP Volume
+- kas_volume_usd | KAS Volume
+- ldo_market_cap_usd | LDO Market Cap
+- ldo_price_usd | LDO Price
+- ldo_volume_usd | LDO Volume
+- link_market_cap_usd | LINK Market Cap
+- link_price_usd | LINK Price
+- link_volume_usd | LINK Volume
+- liveliness | Liveliness
+- log_reg_rainbow | Logarithmic Regression Rainbow
+- logarithmic_regression | Logarithmic Regression
+- macd | Moving Average Convergence Divergence (MACD)
+- market_cap_hypotheticals | Market Cap Hypotheticals
+- mctc | MarketCap To ThermoCap Ratio (MCTC)
+- mctc_miner | MinerCap To ThermoCap Ratio (mCTC)
+- miner_revenue | Miner Revenue
+- momr | Miner Outflow To Miner Revenue (MOMR)
+- monthly_average_roi | Monthly Average ROI
+- monthly_returns | Monthly Returns
+- moving_averages | Moving Averages
+- mvrv | Market Value to Realized Value (MVRV)
+- mvrv_zscore | Market Value Realized Value Z-Score (MVRV Z-Score)
+- near_market_cap_usd | NEAR Market Cap
+- near_volume_usd | NEAR Volume
+- nupl | Net Unrealized Profit/Loss (NUPL)
+- nvt | Network Value to Transactions (NVT)
+- open_interest_crypto_futures | Open Interest Of Crypto Futures
+- pepe_market_cap_usd | PEPE Market Cap
+- pepe_price_usd | PEPE Price
+- pepe_volume_usd | PEPE Volume
+- pi_cycle_bottom_top | Pi Cycle Bottom/Top
+- portfolios_weighted_by_market_cap | Portfolios By Value Range
+- price_color_coded_by_risk | Price Color Coded By Risk
+- price_drawdown_from_ath | Price Drawdown From ATH
+- price_milestone_crossings | Price Milestone Crossings
+- puell_multiple | Puell Multiple
+- qt_ending_bear_markets | QT Ending Bear Markets
+- quarterly_returns | Quarterly Returns
+- rctc | Realized MarketCap To ThermoCap Ratio (RCTC)
+- rhodl_ratio | RHODL Ratio
+- rhodl_waves | RHODL Waves
+- roi_after_cycle_bottom | ROI After Cycle Bottom
+- roi_after_cycle_peak | ROI After Cycle Peak
+- roi_after_halving | ROI After Halving
+- roi_bands | ROI Bands
+- rsi | Relative Strength Index (RSI)
+- running_roi | Running ROI
+- rvts | Realized Network Value to Transaction Signal (RVTS)
+- shib_volume_usd | SHIB Volume
+- short_term_bubble_risk | Short Term Bubble Risk
+- sma_cycle_top_breakout | SMA Cycle-Top Breakout
+- sol_market_cap_usd | SOL Market Cap
+- sol_price_usd | SOL Price
+- sol_volume_usd | SOL Volume
+- sopr | Spent Output Profit Ratio (SOPR)
+- stablecoin_supply_ratio_ssr | Stablecoin Supply Ratio (SSR)
+- stock_to_flow_s2f | Stock to Flow (S2F)
+- supertrend | Supertrend
+- supply_flow_to_exchanges | Supply Flow To Exchanges
+- supply_held_by_exchanges | Supply Held By Exchanges
+- supply_in_profit_or_loss | Supply In Profit Or Loss
+- supply_issued_inflation | Supply Issued & Inflation
+- supply_revived | Supply Revived
+- terminal_price | Terminal Price
+- tia_market_cap_usd | TIA Market Cap
+- tia_price_usd | TIA Price
+- tia_volume_usd | TIA Volume
+- time_in_risk_bands | Time In Risk Bands
+- total_crypto_market_cap_proxy | Major-Cap Crypto Market Cap
+- total_crypto_valuation_trendline | Total Crypto Valuation vs. Trendline
+- transaction_fees | Transaction Fees
+- transfer_count_statistics | Transfer Count Statistics
+- transfer_flow_to_exchanges | Transfer Flow To Exchanges
+- transfer_volume | Transfer Volume
+- us_consumer_sentiment | US Consumer Sentiment
+- us_fed_funds_rate | US Federal Funds Rate
+- us_industrial_production | US Industrial Production
+- us_policy_vs_unemployment | Policy Rate / Unemployment
+- us_public_debt_to_gdp | US Public Debt to GDP
+- us_real_gdp_growth | US Real GDP Growth (QoQ Annualized)
+- us_real_gdp_per_capita | US Real GDP Per Capita
+- us_trade_balance | US Trade Balance
+- utxo_age_distribution | UTxO Age Distribution
+- utxo_supply_distribution | UTxO Supply Distribution
+- value_days_destroyed_multiple | Value Days Destroyed Multiple
+- velocity | Velocity
+- volatility | Volatility
+- wikipedia_page_views | Wikipedia Page Views
+- year_to_date_roi | Year-To-Date ROI
+
+## Not Tested
+
+- aaa_corporate_yield | US AAA Corporate Bond Yield
+- baa_corporate_yield | US BAA Corporate Bond Yield
+- chicago_fci | Chicago Fed NFCI
+- corp_bond_hy_spread | High Yield Credit Spread
+- corp_bond_ig_spread | Investment Grade Credit Spread
+- dollar_index | Trade Weighted Dollar Index
+- dow_jones | Dow Jones Industrial Average
+- equal_weight_sp500_proxy | Equal Weight S&P Proxy
+- eu_business_climate | EU Business Climate
+- eu_ecb_deposit_rate | EU ECB Deposit Facility Rate
+- eu_ecb_main_refi_rate | EU ECB Main Refinancing Rate
+- eu_gdp | EU Real GDP
+- eu_hicp | EU HICP
+- eu_industrial_production | EU Industrial Production
+- eu_long_term_yield | EU Long-Term Gov Yield
+- eu_retail_sales | EU Retail Sales
+- eu_short_rate_3m | EU 3M Interbank Rate
+- eu_unemployment | EU Unemployment Rate
+- eur_usd | EUR/USD Exchange Rate
+- fed_balance_sheet | Fed Balance Sheet
+- fed_reverse_repo | Fed Reverse Repo Facility
+- gbp_usd | GBP/USD Exchange Rate
+- gold_usd | Gold Price (USD)
+- high_yield_oas | US High Yield OAS
+- investment_grade_oas | US Investment Grade OAS
+- move_index_proxy | Treasury Volatility Proxy
+- nasdaq_100 | NASDAQ-100 Index
+- nasdaq_composite | NASDAQ Composite
+- silver_usd | Silver Price (USD)
+- small_cap_russell_proxy | Russell 2000 Proxy
+- snp_dividend_yield | S&P 500 Dividend Yield
+- snp_pe_ratio | S&P 500 PE Ratio
+- sp500_index | S&P 500 Index
+- stlouis_fsi | St. Louis Financial Stress Index
+- ted_spread | TED Spread
+- us_10y_breakeven | US 10Y Breakeven Inflation
+- us_10y_yield | US 10Y Treasury Yield
+- us_1y_yield | US 1Y Treasury Yield
+- us_2y_yield | US 2Y Treasury Yield
+- us_30y_yield | US 30Y Treasury Yield
+- us_3m_tbill | US 3M T-Bill
+- us_5y5y_inflation | US 5Y5Y Inflation Expectation
+- us_5y_breakeven | US 5Y Breakeven Inflation
+- us_5y_yield | US 5Y Treasury Yield
+- us_auto_loan_delinquency | US Auto Loan Delinquency
+- us_bank_credit | US Bank Credit
+- us_building_permits | US Building Permits
+- us_capacity_utilization | US Capacity Utilization
+- us_challenger_job_cuts | US Challenger Job Cuts
+- us_commercial_loans | US Commercial & Industrial Loans
+- us_continuing_claims | US Continuing Jobless Claims
+- us_core_cpi | US Core CPI
+- us_core_pce | US Core PCE
+- us_corporate_bond_aaa_spread | AAA-Treasury Spread
+- us_corporate_bond_baa_spread | BAA-Treasury Spread
+- us_corporate_profits | US Corporate Profits
+- us_cpi | US CPI
+- us_credit_card_delinquency | US Credit Card Delinquency
+- us_durable_goods_orders | US Durable Goods Orders
+- us_effective_fed_funds | US Effective Fed Funds
+- us_emp_pop | US Employment-Population Ratio
+- us_existing_home_sales | US Existing Home Sales
+- us_hires_rate | US Hires Rate
+- us_homeownership_rate | US Homeownership Rate
+- us_hourly_earnings | US Avg Hourly Earnings
+- us_house_price_index | US House Price Index
+- us_household_debt_service_ratio | US Household Debt Service Ratio
+- us_housing_starts | US Housing Starts
+- us_initial_claims | US Initial Jobless Claims
+- us_job_openings | US Job Openings (JOLTS)
+- us_manufacturing_pmi | US ISM Manufacturing PMI
+- us_median_cpi | US Median CPI
+- us_money_supply_m1 | US M1 Money Supply
+- us_money_supply_m2 | US M2 Money Supply
+- us_money_velocity_m2 | US M2 Velocity
+- us_mortgage_30y | US 30Y Mortgage Rate
+- us_mortgage_delinquency | US Mortgage Delinquency Rate
+- us_new_home_sales | US New Home Sales
+- us_nominal_gdp | US Nominal GDP
+- us_nonfarm_payrolls | US Nonfarm Payrolls
+- us_participation | US Labor Force Participation
+- us_pce | US PCE Price Index
+- us_personal_bankruptcies | US Personal Bankruptcy Filings
+- us_personal_savings_rate | US Personal Savings Rate
+- us_ppi | US Producer Price Index
+- us_prime_rate | US Prime Loan Rate
+- us_quits_rate | US Quits Rate
+- us_real_disposable_income | US Real Disposable Income
+- us_real_gdp | US Real GDP
+- us_real_interest_rate_10y | US 10Y Real Yield
+- us_real_m2 | US Real M2 Money Supply
+- us_real_pce | US Real Personal Consumption Expenditures
+- us_recession_indicator | US Recession Indicator
+- us_recession_probability | US Recession Probability
+- us_rent_cpi | US Rent CPI
+- us_retail_sales | US Retail Sales
+- us_senior_loan_officer_tightening | US Bank Lending Standards Tightening
+- us_service_pmi | US Services PMI
+- us_shelter_cpi | US Shelter CPI
+- us_small_business_optimism | US NFIB Small Business Optimism
+- us_sofr | US SOFR
+- us_total_consumer_credit | US Consumer Credit Outstanding
+- us_u6_unemployment | US U6 Unemployment
+- us_unemployment | US Unemployment Rate
+- us_yield_curve_10y2y | US 10Y-2Y Yield Spread
+- us_yield_curve_10y3m | US 10Y-3M Yield Spread
+- usd_cny | USD/CNY Exchange Rate
+- usd_jpy | USD/JPY Exchange Rate
+- vix | CBOE Volatility Index (VIX)
+- wilshire_5000 | Wilshire 5000
+- wti_oil | WTI Crude Oil

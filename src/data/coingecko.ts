@@ -270,6 +270,52 @@ async function fetchStooqDailyCloseSeries(opts: { symbol: string; days: number }
   return trimSeriesToDays(out, opts.days);
 }
 
+async function fetchBgeometricsSeries(fileName: string, days: number): Promise<XYPoint[]> {
+  const url = `https://charts.bgeometrics.com/files/${encodeURIComponent(fileName)}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6500);
+  try {
+    const res = await fetchWithWebProxy(url, {
+      headers: { Accept: "application/json" },
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+    if (!Array.isArray(json)) return [];
+    const rows = json
+      .map((row: any) => ({ x: Number(row?.[0]), y: Number(row?.[1]) }))
+      .filter((row: XYPoint) => Number.isFinite(row.x) && Number.isFinite(row.y))
+      .sort((a: XYPoint, b: XYPoint) => a.x - b.x);
+    return trimSeriesToDays(rows, days);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchBgeometricsBitcoinSeries(opts: {
+  coinId: string;
+  metric: "prices" | "market_caps" | "total_volumes";
+  days: number;
+}): Promise<XYPoint[]> {
+  if (opts.coinId !== "bitcoin") return [];
+  if (opts.metric === "prices") {
+    const rows = await fetchBgeometricsSeries("realized_price_btc_price.json", opts.days);
+    if (rows.length >= 2) return rows;
+    return fetchBgeometricsSeries("moving_average_price.json", opts.days);
+  }
+  if (opts.metric === "market_caps") {
+    return fetchBgeometricsSeries("market_cap.json", opts.days);
+  }
+  if (opts.metric === "total_volumes") {
+    // On-chain settlement value (USD) is the closest consistently available long-range proxy.
+    const rows = await fetchBgeometricsSeries("realized_total_usd.json", opts.days);
+    if (rows.length >= 2) return rows;
+  }
+  return [];
+}
+
 async function fetchAlternativeCryptoSeries(opts: {
   coinId: string;
   vsCurrency: string;
@@ -421,6 +467,13 @@ export async function fetchCoinGeckoMarketChart(opts: {
   const seriesKey = opts.metric ?? "prices";
   const wantsLongRange = opts.days > 365;
   if (wantsLongRange) {
+    const bgeometricsLongRange = await fetchBgeometricsBitcoinSeries({
+      coinId: opts.coinId,
+      metric: seriesKey,
+      days: opts.days,
+    });
+    if (bgeometricsLongRange.length >= 2) return trimSeriesToDays(bgeometricsLongRange, opts.days);
+
     const altLongRange = await fetchAlternativeCryptoSeries({
       coinId: opts.coinId,
       vsCurrency: opts.vsCurrency,
@@ -466,6 +519,16 @@ export async function fetchCoinGeckoMarketChart(opts: {
   if (altSeries.length >= 2) {
     return trimSeriesToDays(altSeries, opts.days);
   }
+
+  const bgeometricsFallback = await fetchBgeometricsBitcoinSeries({
+    coinId: opts.coinId,
+    metric: seriesKey,
+    days: opts.days,
+  });
+  if (bgeometricsFallback.length >= 2) {
+    return trimSeriesToDays(bgeometricsFallback, opts.days);
+  }
+
   return trimSeriesToDays(mapped, opts.days);
 }
 

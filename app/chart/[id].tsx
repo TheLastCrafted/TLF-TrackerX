@@ -7,7 +7,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { tradingMarketCapSymbolForCoinId, tradingSymbolForCoinId } from "../../src/catalog/trading-symbols";
 import { tradingSymbolForChartId } from "../../src/catalog/chart-trading-symbols";
 import { CHARTS, ChartValueFormat } from "../../src/catalog/charts";
-import { fetchCanonicalCryptoChartSeries } from "../../src/data/bgeometrics";
+import {
+  PORTFOLIO_VALUE_RANGE_OPTIONS,
+  PortfolioValueRangeId,
+  fetchCanonicalCryptoChartSeries,
+  fetchPortfolioValueRangeSeries,
+} from "../../src/data/bgeometrics";
 import { fetchCoinGeckoMarketChart } from "../../src/data/coingecko";
 import { fetchFredSeries } from "../../src/data/macro";
 import { fetchBlockchainChartSeries } from "../../src/data/onchain";
@@ -38,11 +43,22 @@ const TIMEFRAMES: { days: TimeframeDays; label: string }[] = [
 
 const DEFAULT_SUPPORTED_DAYS: TimeframeDays = 30;
 const MAX_SUPPORTED_DAYS: TimeframeDays = 18250;
+const DEFAULT_PORTFOLIO_VALUE_RANGE: PortfolioValueRangeId = "all";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BTC_HALVING_DATES = ["2012-11-28", "2016-07-09", "2020-05-11", "2024-04-20"];
 const BTC_CYCLE_BOTTOM_DATES = ["2015-01-14", "2018-12-15", "2022-11-21"];
 const BTC_CYCLE_PEAK_DATES = ["2013-12-04", "2017-12-17", "2021-11-10", "2024-03-14"];
 const BTC_SUB_CYCLE_BOTTOM_DATES = ["2019-12-18", "2023-09-11"];
+const RISK_SCORE_CHART_IDS = new Set([
+  "price_color_coded_by_risk",
+  "historical_risk_levels",
+  "current_risk_levels",
+]);
+const LOG_SCALE_CHART_IDS = new Set([
+  "logarithmic_regression",
+  "fair_value_log_reg",
+  "log_reg_rainbow",
+]);
 
 function clampToSupportedTimeframe(days: number): TimeframeDays {
   for (let i = TIMEFRAMES.length - 1; i >= 0; i -= 1) {
@@ -75,6 +91,21 @@ function formatValue(v: number, mode: ChartValueFormat, currency: "USD" | "EUR")
     return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
   }
   return v.toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function riskColorFromScore(score: number): string {
+  const t = clamp(score / 100, 0, 1);
+  const low = { r: 54, g: 211, b: 153 }; // green
+  const high = { r: 255, g: 107, b: 107 }; // red
+  const r = Math.round(low.r + (high.r - low.r) * t);
+  const g = Math.round(low.g + (high.g - low.g) * t);
+  const b = Math.round(low.b + (high.b - low.b) * t);
+  const toHex = (n: number) => n.toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
 function downsample(data: Pt[], density: "low" | "medium" | "high"): Pt[] {
@@ -271,6 +302,15 @@ const DERIVED_SPECIAL_CHART_IDS = new Set<string>([
   ...Array.from(INDICATOR_SPECIAL_CHART_IDS),
 ]);
 
+const CANONICAL_ONLY_CHART_IDS = new Set<string>([
+  "youtube_subscribers",
+  "youtube_views",
+  "twitter_followers_analysts",
+  "twitter_followers_exchanges",
+  "twitter_followers_layer1s",
+  "twitter_tweets",
+]);
+
 function lookbackDaysForSpecialChart(defId: string, timeframeDays: number): number {
   if (defId === "historical_monthly_average_roi") return Math.max(timeframeDays, 730);
   if (defId === "monthly_average_roi") return Math.max(timeframeDays, 365);
@@ -343,6 +383,20 @@ function buildSpecialRoiSeries(defId: string, baseSeries: Pt[]): Pt[] {
   if (defId === "roi_after_sub_cycle_bottom") {
     const anchor = findLatestEventInSeriesRange(baseSeries, BTC_SUB_CYCLE_BOTTOM_DATES) ?? baseSeries[0].x;
     return anchorSeriesToRoi(baseSeries, anchor);
+  }
+  return [];
+}
+
+async function loadFirstAvailableSeries(
+  candidateIds: string[],
+  currency: string,
+  timeframeDays: number,
+  depth: number,
+  visited: Set<string>
+): Promise<Pt[]> {
+  for (const candidateId of candidateIds) {
+    const rows = await loadSeries(candidateId, currency, timeframeDays, depth + 1, visited);
+    if (rows.length >= 2) return rows;
   }
   return [];
 }
@@ -442,13 +496,9 @@ function computeLogRegressionSeries(priceSeries: Pt[]): { trend: Pt[]; fair: Pt[
   const slope = (n * sumXY - sumX * sumY) / denom;
   const intercept = (sumY - slope * sumX) / n;
 
-  const residuals = usable.map((row, i) => ys[i] - (intercept + slope * xs[i]));
-  const residualMean = residuals.reduce((a, b) => a + b, 0) / residuals.length;
-  const residualVar = residuals.reduce((a, b) => a + (b - residualMean) ** 2, 0) / residuals.length;
-  const sigma = Math.sqrt(Math.max(0, residualVar));
-
   const trend: Pt[] = usable.map((row, i) => ({ x: row.x, y: Math.exp(intercept + slope * xs[i]) }));
-  const fair: Pt[] = trend.map((row) => ({ x: row.x, y: row.y * Math.exp(-sigma) }));
+  // "Fair value" is the central regression estimate; floor/ceiling bands are separate concepts.
+  const fair: Pt[] = trend.map((row) => ({ x: row.x, y: row.y }));
   const trendByTs = seriesToMap(trend);
   const rainbow: Pt[] = usable.map((row) => {
     const base = trendByTs.get(row.x) ?? NaN;
@@ -638,6 +688,9 @@ async function loadSeries(
       timeframeDays
     );
   }
+  if (CANONICAL_ONLY_CHART_IDS.has(def.id)) {
+    return [];
+  }
   if (def.type === "coingecko_market_chart") {
     const raw = await fetchCoinGeckoMarketChart({
       coinId: def.params.coinId,
@@ -667,7 +720,18 @@ async function loadSeries(
     const specialLookbackDays = lookbackDaysForSpecialChart(def.id, timeframeDays);
     let derived: Pt[] = [];
     if (ROI_SPECIAL_CHART_IDS.has(def.id)) {
-      const baseSeries = await loadSeries(def.params.leftId, currency, specialLookbackDays, depth + 1, nextVisited);
+      const roiBaseCandidates = [
+        def.params.leftId,
+        "btc_price_usd",
+        "eth_price_usd",
+      ].filter((row, idx, arr) => arr.indexOf(row) === idx);
+      const baseSeries = await loadFirstAvailableSeries(
+        roiBaseCandidates,
+        currency,
+        specialLookbackDays,
+        depth + 1,
+        nextVisited
+      );
       derived = buildSpecialRoiSeries(def.id, baseSeries);
       if (derived.length < 2 && baseSeries.length) {
         derived = anchorSeriesToRoi(baseSeries, baseSeries[0].x);
@@ -676,6 +740,11 @@ async function loadSeries(
       derived = await buildSpecialIndicatorSeries(def.id, currency, specialLookbackDays, depth + 1, nextVisited);
     }
     return ensureRenderableSeries(limitToTimeframe(derived, timeframeDays));
+  }
+  if (def.type === "formula_chart" && def.category === "Crypto") {
+    // Prevent misleading outputs: crypto formula charts must be explicitly wired
+    // via canonical feeds/special indicator logic, never generic formula fallback.
+    return [];
   }
   const left = await loadSeries(def.params.leftId, currency, timeframeDays, depth + 1, nextVisited);
   const right = await loadSeries(def.params.rightId, currency, timeframeDays, depth + 1, nextVisited);
@@ -712,6 +781,7 @@ export default function ChartDetail() {
   const [curved, setCurved] = useState(settings.simpleChartCurved);
   const [normalize, setNormalize] = useState(settings.simpleChartNormalize);
   const [showLabels, setShowLabels] = useState(settings.simpleChartShowLabels);
+  const [logScaleEnabled, setLogScaleEnabled] = useState<boolean>(false);
   const [showControls, setShowControls] = useState(false);
   const [showTimeMenu, setShowTimeMenu] = useState(false);
   const [showAlertPanel, setShowAlertPanel] = useState(false);
@@ -727,6 +797,21 @@ export default function ChartDetail() {
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const initializedChartIdRef = useRef<string>("");
   const [timeframeAvailability, setTimeframeAvailability] = useState<Record<number, boolean>>({});
+  const [portfolioValueRange, setPortfolioValueRange] = useState<PortfolioValueRangeId>(DEFAULT_PORTFOLIO_VALUE_RANGE);
+
+  const isPortfolioDistributionChart = chartDef?.id === "portfolios_weighted_by_market_cap";
+
+  const loadChartSeries = useCallback(async (days: number): Promise<Pt[]> => {
+    if (!chartDef) return [];
+    if (chartDef.id === "portfolios_weighted_by_market_cap") {
+      const rows = await fetchPortfolioValueRangeSeries(portfolioValueRange, days);
+      return rows
+        .map((row) => ({ x: Number(row.x), y: Number(row.y) }))
+        .filter((row) => Number.isFinite(row.x) && Number.isFinite(row.y))
+        .sort((a, b) => a.x - b.x);
+    }
+    return loadSeries(chartDef.id, settings.currency, days);
+  }, [chartDef, portfolioValueRange, settings.currency]);
 
   useEffect(() => {
     if (!chartDef) return;
@@ -738,7 +823,14 @@ export default function ChartDetail() {
     const clamped = clampToSupportedTimeframe(Math.min(preferred, maxSupportedDays));
     setTimeframeDays(clamped);
     setShowControls(false);
+    const defaultLogEnabled = LOG_SCALE_CHART_IDS.has(chartDef.id);
+    setLogScaleEnabled(defaultLogEnabled);
   }, [chartDef, maxSupportedDays, settings.defaultTimeframeDays]);
+
+  useEffect(() => {
+    if (chartDef?.id !== "portfolios_weighted_by_market_cap") return;
+    setPortfolioValueRange(DEFAULT_PORTFOLIO_VALUE_RANGE);
+  }, [chartDef?.id]);
 
   useEffect(() => {
     if (!chartDef || chartDef.type === "coingecko_market_chart") return;
@@ -756,7 +848,7 @@ export default function ChartDetail() {
     const probe = async () => {
       const next: Record<number, boolean> = { ...baseline };
       try {
-        const probeSeries = await loadSeries(chartDef.id, settings.currency, maxSupportedDays);
+        const probeSeries = await loadChartSeries(maxSupportedDays);
         for (const tf of TIMEFRAMES) {
           if (tf.days > maxSupportedDays) {
             next[tf.days] = false;
@@ -777,7 +869,7 @@ export default function ChartDetail() {
     return () => {
       active = false;
     };
-  }, [chartDef, chartMode, maxSupportedDays, settings.currency]);
+  }, [chartDef, chartMode, maxSupportedDays, loadChartSeries]);
 
   const load = useCallback(async (isManual = false) => {
     try {
@@ -787,14 +879,17 @@ export default function ChartDetail() {
       setErr(null);
       if (!chartDef) throw new Error("Chart not found");
 
-      let converted = await loadSeries(chartDef.id, settings.currency, timeframeDays);
+      let converted = await loadChartSeries(timeframeDays);
       if (converted.length < 2) {
+        if (CANONICAL_ONLY_CHART_IDS.has(chartDef.id)) {
+          throw new Error("Live social-history feed is not available yet for this chart.");
+        }
         const retryDays = Math.max(timeframeDays, maxSupportedDaysForChart(chartDef.id));
-        converted = await loadSeries(chartDef.id, settings.currency, retryDays);
+        converted = await loadChartSeries(retryDays);
       }
       if (converted.length < 2) {
         const fallbackDays = 365;
-        converted = await loadSeries(chartDef.id, settings.currency, fallbackDays);
+        converted = await loadChartSeries(fallbackDays);
       }
       if (converted.length < 1) throw new Error("Not enough data points returned");
       if (converted.length === 1) {
@@ -810,7 +905,7 @@ export default function ChartDetail() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [chartDef, settings.currency, timeframeDays]);
+  }, [chartDef, timeframeDays, loadChartSeries]);
 
   useEffect(() => {
     if (!chartDef) return;
@@ -875,25 +970,78 @@ export default function ChartDetail() {
   }, [settings.language, timeframeDays]);
   const isUp = (stats?.changePct ?? 0) >= 0;
   const valueFormat = normalize ? "index" : chartDef?.valueFormat ?? "number";
+  const formatChartValue = useCallback((value: number) => {
+    if (isPortfolioDistributionChart) {
+      return Math.round(value).toLocaleString(settings.language, { maximumFractionDigits: 0 });
+    }
+    return formatValue(value, valueFormat, settings.currency);
+  }, [isPortfolioDistributionChart, settings.language, settings.currency, valueFormat]);
+  const selectedPoint = selectedIndex !== null ? (viewData[selectedIndex] ?? null) : null;
+  const isRiskScoreChart = !!chartDef?.id && RISK_SCORE_CHART_IDS.has(chartDef.id);
+  const isRiskColorizedChart = chartDef?.id === "price_color_coded_by_risk";
+  const isCryptoUsdPriceChart =
+    chartDef?.type === "coingecko_market_chart" &&
+    chartDef.params.metric === "prices" &&
+    settings.currency === "USD";
+  const isLogarithmicChart = !!chartDef?.id && LOG_SCALE_CHART_IDS.has(chartDef.id);
+  const canToggleLogScale = isCryptoUsdPriceChart || isLogarithmicChart;
+  const canUseLogScale =
+    canToggleLogScale &&
+    logScaleEnabled &&
+    viewData.length >= 2 &&
+    viewData.every((point) => point.y > 0);
+  const riskReferenceScore = Number(selectedPoint?.y ?? stats?.last ?? 50);
+  const chartAccentColor = isRiskColorizedChart ? riskColorFromScore(riskReferenceScore) : "#8B5CF6";
+  const chartSegmentColors = isRiskColorizedChart ? viewData.map((point) => riskColorFromScore(point.y)) : undefined;
   const chartWidth = Math.max(220, width - 14 * 2 - 8 * 2 - 2);
   const yAxisWidth = 52;
   const chartInnerWidth = Math.max(160, chartWidth - yAxisWidth);
-  const selectedPoint = selectedIndex !== null ? (viewData[selectedIndex] ?? null) : null;
   const barStats = useMemo(() => {
     if (!viewData.length) return null;
+    if (canUseLogScale) {
+      const positive = viewData.map((p) => p.y).filter((value) => Number.isFinite(value) && value > 0);
+      if (!positive.length) return null;
+      const min = Math.min(...positive);
+      const max = Math.max(...positive);
+      const logMin = Math.log10(min);
+      const logMax = Math.log10(max);
+      const logRange = Math.max(logMax - logMin, 1e-9);
+      return { min, max, range: Math.max(max - min, 1), logMin, logRange };
+    }
     const min = Math.min(...viewData.map((p) => p.y));
     const max = Math.max(...viewData.map((p) => p.y));
     const range = Math.max(max - min, 1);
-    return { min, max, range };
-  }, [viewData]);
+    return { min, max, range, logMin: 0, logRange: 1 };
+  }, [viewData, canUseLogScale]);
   const barWidthPx = Math.max(2, Math.floor((chartInnerWidth - 16) / Math.max(viewData.length, 30)) - 1);
-  const selectedValueLabel = selectedPoint ? formatValue(selectedPoint.y, valueFormat, settings.currency) : null;
+  const selectedValueLabel = selectedPoint ? formatChartValue(selectedPoint.y) : null;
   const selectedDateLabel = selectedPoint ? new Date(selectedPoint.x).toLocaleDateString(settings.language, { year: "numeric", month: "short", day: "numeric" }) : null;
   const axisStartLabel = viewData.length ? formatXAxis(viewData[0].x) : "Start";
   const axisMidLabel = viewData.length ? formatXAxis(viewData[Math.floor((viewData.length - 1) / 2)].x) : "Mid";
   const axisEndLabel = viewData.length ? formatXAxis(viewData[viewData.length - 1].x) : "End";
   const selectedX = selectedIndex === null || viewData.length < 2 ? null : Math.round((selectedIndex / (viewData.length - 1)) * Math.max(chartInnerWidth - 1, 1));
   const yTicks = useMemo(() => {
+    if (isRiskScoreChart) {
+      return [100, 75, 50, 25, 0].map((value, idx) => ({
+        value,
+        topPct: (idx / 4) * 100,
+      }));
+    }
+    if (canUseLogScale) {
+      const values = viewData.map((point) => point.y).filter((value) => Number.isFinite(value) && value > 0);
+      if (values.length >= 2) {
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const logMin = Math.log10(min);
+        const logMax = Math.log10(max);
+        const logRange = Math.max(logMax - logMin, 1e-9);
+        return Array.from({ length: 5 }, (_, i) => {
+          const ratio = i / 4;
+          const logValue = logMax - ratio * logRange;
+          return { value: 10 ** logValue, topPct: ratio * 100 };
+        });
+      }
+    }
     const max = stats?.max ?? 0;
     const min = stats?.min ?? 0;
     const range = Math.max(max - min, 1e-9);
@@ -902,7 +1050,14 @@ export default function ChartDetail() {
       const v = max - ratio * range;
       return { value: v, topPct: ratio * 100 };
     });
-  }, [stats]);
+  }, [stats, isRiskScoreChart, canUseLogScale, viewData]);
+  const zeroLineTopPct = useMemo(() => {
+    if (isRiskScoreChart || canUseLogScale || !stats) return null;
+    if (!(stats.max > 0 && stats.min < 0)) return null;
+    const range = stats.max - stats.min;
+    if (!Number.isFinite(range) || range <= 0) return null;
+    return (stats.max / range) * 100;
+  }, [isRiskScoreChart, canUseLogScale, stats]);
 
   const selectNearestFromX = useCallback((x: number) => {
     if (!viewData.length) return;
@@ -1099,6 +1254,46 @@ export default function ChartDetail() {
           </View>
         )}
 
+        {chartMode === "simple" && isPortfolioDistributionChart && (
+          <View
+            style={{
+              marginBottom: 10,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: colors.border,
+              backgroundColor: colors.surface,
+              padding: 10,
+            }}
+          >
+            <Text style={{ color: colors.subtext, fontSize: 12, fontWeight: "700", marginBottom: 8 }}>
+              Portfolio balance range (BTC)
+            </Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+              {PORTFOLIO_VALUE_RANGE_OPTIONS.map((range) => {
+                const active = portfolioValueRange === range.id;
+                return (
+                  <Pressable
+                    key={range.id}
+                    onPress={() => setPortfolioValueRange(range.id)}
+                    style={({ pressed }) => ({
+                      borderRadius: 999,
+                      borderWidth: 1,
+                      borderColor: active ? "#5F43B2" : colors.border,
+                      backgroundColor: pressed ? (colors.dark ? "#161624" : "#EDF2FF") : active ? (colors.dark ? "#17132A" : "#EEE8FF") : colors.surface,
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                    })}
+                  >
+                    <Text style={{ color: active ? "#B79DFF" : "#D7D7EA", fontWeight: "700", fontSize: 12 }}>
+                      {range.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        )}
+
         {showTimeMenu && chartMode === "simple" && (
           <View style={{ marginBottom: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10, flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {availableTimeframes.map((tf) => {
@@ -1223,6 +1418,30 @@ export default function ChartDetail() {
                   <Text style={{ color: active ? "#B79DFF" : "#D7D7EA", fontWeight: "700", fontSize: 12 }}>{label}</Text>
                 </Pressable>
               ))}
+
+              {canToggleLogScale && (
+                <Pressable
+                  onPress={() => {
+                    setLogScaleEnabled((prev) => !prev);
+                  }}
+                  style={({ pressed }) => ({
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: logScaleEnabled ? "#5F43B2" : colors.border,
+                    backgroundColor: pressed
+                      ? (colors.dark ? "#161624" : "#EDF2FF")
+                      : logScaleEnabled
+                        ? (colors.dark ? "#17132A" : "#EEE8FF")
+                        : colors.surface,
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                  })}
+                >
+                  <Text style={{ color: logScaleEnabled ? "#B79DFF" : "#D7D7EA", fontWeight: "700", fontSize: 12 }}>
+                    Log Y Axis
+                  </Text>
+                </Pressable>
+              )}
             </View>
           </View>
         )}
@@ -1230,9 +1449,9 @@ export default function ChartDetail() {
         {!!stats && chartMode === "simple" && (
           <View style={{ marginBottom: 8, flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {[
-              { label: "High", value: formatValue(stats.max, valueFormat, settings.currency) },
-              { label: "Avg", value: formatValue(stats.avg, valueFormat, settings.currency) },
-              { label: "Low", value: formatValue(stats.min, valueFormat, settings.currency) },
+              { label: "High", value: formatChartValue(stats.max) },
+              { label: "Avg", value: formatChartValue(stats.avg) },
+              { label: "Low", value: formatChartValue(stats.min) },
             ].map((row) => (
               <View key={row.label} style={{ borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, paddingHorizontal: 10, paddingVertical: 6 }}>
                 <Text style={{ color: colors.subtext, fontSize: 11 }}>{row.label}</Text>
@@ -1267,7 +1486,7 @@ export default function ChartDetail() {
                 <View style={{ width: yAxisWidth, height: 300, justifyContent: "space-between", paddingVertical: 2 }}>
                   {yTicks.map((tick, idx) => (
                     <Text key={`yt_${idx}`} style={{ color: colors.subtext, fontSize: 11, textAlign: "right" }}>
-                      {formatValue(tick.value, valueFormat, settings.currency)}
+                      {formatChartValue(tick.value)}
                     </Text>
                   ))}
                 </View>
@@ -1306,7 +1525,9 @@ export default function ChartDetail() {
                   {visual === "bar" ? (
                     <View style={{ height: "100%", flexDirection: "row", alignItems: "flex-end", gap: 1, paddingHorizontal: 4, paddingBottom: 4 }}>
                       {!!barStats && viewData.map((point, index) => {
-                        const normalized = (point.y - barStats.min) / barStats.range;
+                        const normalized = canUseLogScale
+                          ? (Math.log10(Math.max(point.y, Number.MIN_VALUE)) - barStats.logMin) / barStats.logRange
+                          : (point.y - barStats.min) / barStats.range;
                         const height = Math.max(2, Math.round(normalized * 286));
                         const active = selectedIndex === index;
                         return (
@@ -1317,7 +1538,13 @@ export default function ChartDetail() {
                               width: barWidthPx,
                               height,
                               borderRadius: 3,
-                              backgroundColor: active ? "#D2B8FF" : point.y >= 0 ? "#8B5CF6" : "#FF7389",
+                              backgroundColor: active
+                                ? "#D2B8FF"
+                                : isRiskColorizedChart
+                                  ? riskColorFromScore(point.y)
+                                  : point.y >= 0
+                                    ? "#8B5CF6"
+                                    : "#FF7389",
                               opacity: active ? 1 : 0.9,
                             }}
                           />
@@ -1329,8 +1556,25 @@ export default function ChartDetail() {
                       values={viewData.map((p) => p.y)}
                       width={chartInnerWidth}
                       height={300}
-                      color="#8B5CF6"
+                      color={chartAccentColor}
                       showPoints={showPoints}
+                      segmentColors={chartSegmentColors}
+                      yScale={canUseLogScale ? "log" : "linear"}
+                    />
+                  )}
+
+                  {zeroLineTopPct !== null && (
+                    <View
+                      pointerEvents="none"
+                      style={{
+                        position: "absolute",
+                        left: 0,
+                        right: 0,
+                        top: `${zeroLineTopPct}%`,
+                        borderTopWidth: 1.5,
+                        borderTopColor: colors.dark ? "rgba(222, 230, 255, 0.7)" : "rgba(58, 78, 122, 0.62)",
+                        borderStyle: "dashed",
+                      }}
                     />
                   )}
 
@@ -1355,7 +1599,7 @@ export default function ChartDetail() {
                       }}
                     >
                       <Text style={{ color: colors.text, fontWeight: "800", fontSize: 12 }}>
-                        {formatValue(selectedPoint.y, valueFormat, settings.currency)}
+                        {formatChartValue(selectedPoint.y)}
                       </Text>
                       <Text style={{ color: colors.subtext, fontSize: 11, marginTop: 2 }}>
                         {new Date(selectedPoint.x).toLocaleDateString(settings.language, { year: "numeric", month: "short", day: "numeric" })}
@@ -1386,7 +1630,7 @@ export default function ChartDetail() {
             <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12 }}>
               <Text style={{ color: "#B8B8C5" }}>Current Value</Text>
               <Text style={{ color: colors.text, fontSize: 24, fontWeight: "900", marginTop: 6 }}>
-                {formatValue(stats.last, valueFormat, settings.currency)}
+                {formatChartValue(stats.last)}
               </Text>
               <Text style={{ color: isUp ? "#36D399" : "#FF6B6B", marginTop: 4, fontWeight: "700" }}>
                 {isUp ? "+" : ""}{stats.changePct.toFixed(2)}%
@@ -1396,18 +1640,18 @@ export default function ChartDetail() {
             <View style={{ flexDirection: "row", gap: 10 }}>
               <View style={{ flex: 1, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12 }}>
                 <Text style={{ color: "#B8B8C5" }}>Low</Text>
-                <Text style={{ color: "#CFCFDE", fontSize: 16, fontWeight: "700", marginTop: 6 }}>{formatValue(stats.min, valueFormat, settings.currency)}</Text>
+                <Text style={{ color: "#CFCFDE", fontSize: 16, fontWeight: "700", marginTop: 6 }}>{formatChartValue(stats.min)}</Text>
               </View>
               <View style={{ flex: 1, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12 }}>
                 <Text style={{ color: "#B8B8C5" }}>High</Text>
-                <Text style={{ color: "#CFCFDE", fontSize: 16, fontWeight: "700", marginTop: 6 }}>{formatValue(stats.max, valueFormat, settings.currency)}</Text>
+                <Text style={{ color: "#CFCFDE", fontSize: 16, fontWeight: "700", marginTop: 6 }}>{formatChartValue(stats.max)}</Text>
               </View>
             </View>
 
             <View style={{ borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 12 }}>
               <Text style={{ color: "#B8B8C5" }}>Context</Text>
               <Text style={{ color: "#CFCFDE", marginTop: 6, fontWeight: "700" }}>
-                Avg {formatValue(stats.avg, valueFormat, settings.currency)} • {stats.points} points
+                Avg {formatChartValue(stats.avg)} • {stats.points} points
               </Text>
               <Text style={{ color: "#9CA3C8", marginTop: 4 }}>
                 {new Date(stats.startTs).toLocaleDateString()} - {new Date(stats.endTs).toLocaleDateString()}
